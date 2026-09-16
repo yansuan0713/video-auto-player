@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>视频自动播放器</title>
+<style>
+  :root {
+    --brand: #2563eb;
+    --bg: #ffffff;
+    --fg: #0f172a;
+    --muted: #64748b;
+    --line: #e2e8f0;
+    --ok: #16a34a;
+    --off: #94a3b8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    width: 340px;
+    margin: 0;
+    padding: 12px;
+    background: var(--bg);
+    color: var(--fg);
+    font: 13px/1.6 system-ui, -apple-system, "Microsoft YaHei", sans-serif;
+  }
+  .head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .head h1 { flex: 1; margin: 0; font-size: 14px; font-weight: 600; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--off); transition: background .2s; }
+  .dot.on { background: var(--ok); box-shadow: 0 0 0 3px rgba(22, 163, 74, .18); }
+  .state { font-size: 12px; color: var(--muted); }
+  .state.on { color: var(--ok); font-weight: 600; }
+
+  .card {
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: #f8fafc;
+  }
+  .row { display: flex; align-items: center; gap: 10px; }
+  .row + .row { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
+  .label { flex: 1; }
+  .label b { display: block; font-size: 13px; font-weight: 600; }
+  .label small { display: block; color: var(--muted); font-size: 11px; line-height: 1.4; }
+
+  /* 开关 */
+  .switch { position: relative; flex: none; width: 42px; height: 24px; }
+  .switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+  .track {
+    position: absolute; inset: 0; border-radius: 999px;
+    background: #cbd5e1; transition: background .2s; pointer-events: none;
+  }
+  .track::after {
+    content: ""; position: absolute; top: 3px; left: 3px;
+    width: 18px; height: 18px; border-radius: 50%; background: #fff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, .25); transition: transform .2s;
+  }
+  .switch input:checked + .track { background: var(--brand); }
+  .switch input:checked + .track::after { transform: translateX(18px); }
+  .switch input:focus-visible + .track { outline: 2px solid var(--brand); outline-offset: 2px; }
+
+  .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+  button.ghost {
+    width: 100%; padding: 7px 8px;
+    border: 1px solid var(--line); border-radius: 8px;
+    background: #fff; color: var(--fg); font: inherit; font-size: 12px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+  }
+  button.ghost:hover { border-color: var(--brand); color: var(--brand); }
+  button.ghost.busy { opacity: .65; pointer-events: none; }
+
+  .hint { margin: 10px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+  .hint kbd {
+    padding: 0 4px; border: 1px solid var(--line); border-bottom-width: 2px;
+    border-radius: 4px; background: #fff; font: inherit; font-size: 10px;
+  }
+  .pill {
+    display: inline-block; margin-top: 8px; padding: 2px 8px;
+    border-radius: 999px; background: #eff6ff; color: var(--brand); font-size: 10px;
+  }
+
+  /* —— 诊断面板：不用 F12 也能看到结果 —— */
+  .diag { margin-top: 10px; }
+  .diag .sec {
+    margin-top: 8px; padding: 8px 10px;
+    border: 1px solid var(--line); border-radius: 8px; background: #f8fafc;
+  }
+  .diag .sec:first-child { margin-top: 0; }
+  .diag h2 {
+    margin: 0 0 6px; font-size: 11px; font-weight: 600;
+    color: var(--muted); text-transform: uppercase; letter-spacing: .04em;
+  }
+  .diag .kv { display: flex; gap: 8px; font-size: 11px; line-height: 1.6; }
+  .diag .kv span:first-child { flex: none; width: 76px; color: var(--muted); }
+  .diag .kv span:last-child {
+    flex: 1; word-break: break-all;
+    font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 10.5px;
+  }
+  .diag .verdict {
+    display: flex; gap: 6px; align-items: flex-start;
+    font-size: 11.5px; line-height: 1.55;
+  }
+  .diag .verdict + .verdict { margin-top: 4px; }
+  .diag .mark { flex: none; font-weight: 700; }
+  .diag .ok .mark { color: var(--ok); }
+  .diag .bad .mark { color: #dc2626; }
+  .diag .cand {
+    font-size: 10.5px; line-height: 1.6;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+  }
+  .diag .cand b { color: var(--brand); }
+  .diag .note { margin-top: 6px; color: var(--muted); font-size: 10.5px; line-height: 1.5; }
+  .diag .empty { color: var(--muted); font-size: 11px; }
+</style>
+</head>
+<body>
+  <div class="head">
+    <span class="dot" id="dot"></span>
+    <h1>视频自动播放器</h1>
+    <span class="state" id="state">读取中…</span>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <span class="label">
+        <b>自动进入下一节</b>
+        <small>视频自然播放结束后，自动点击页面上的“下一节 / 下一个任务点”</small>
+      </span>
+      <label class="switch">
+        <input type="checkbox" id="autoNext" role="switch" aria-label="自动进入下一节">
+        <span class="track"></span>
+      </label>
+    </div>
+    <div class="row">
+      <span class="label">
+        <b>自动二倍速</b>
+        <small>允许倍速时设为 2.0；页面不接受时，当前视频自动回退到 1.0</small>
+      </span>
+      <label class="switch">
+        <input type="checkbox" id="autoRate2x" role="switch" aria-label="自动二倍速">
+        <span class="track"></span>
+      </label>
+    </div>
+    <div class="row">
+      <span class="label">
+        <b>自动跳过非视频页面</b>
+        <small>下一节不是视频时继续往下点。⚠️ 可能跳过测验/作业，默认关闭</small>
+      </span>
+      <label class="switch">
+        <input type="checkbox" id="autoSkipNonVideo" role="switch" aria-label="自动跳过非视频页面">
+        <span class="track"></span>
+      </label>
+    </div>
+    <div class="row">
+      <span class="label">
+        <b>详细调试日志</b>
+        <small>在页面控制台输出扫描与按钮候选详情（排查用）</small>
+      </span>
+      <label class="switch">
+        <input type="checkbox" id="verbose" role="switch" aria-label="详细调试日志">
+        <span class="track"></span>
+      </label>
+    </div>
+    <div class="actions">
+      <button class="ghost" id="printStats">检测当前标签页</button>
+      <button class="ghost" id="clickNext">手动点“下一节”</button>
+    </div>
+  </div>
+
+  <div id="diag" class="diag" hidden></div>
+
+  <p class="hint">
+    两个功能互相独立，可单独开启。都只作用于浏览器播放器本身：不改播放进度、不改视频时长、
+    不伪造时长、不发送虚假完成请求、不调用站点后端接口、不绕过验证码或检测机制。<br>
+    修改开关后请刷新一次已打开的课程页面。
+  </p>
+  <span class="pill">Manifest V3 · 支持 iframe</span>
+
+  <script src="popup.js"></script>
+</body>
+</html>
