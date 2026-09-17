@@ -45,7 +45,9 @@
   function scan() {
     if (!started) return [];
     if (location.href !== lastScanUrl) {
-      AutoNext.debug(`页面 URL 变化：${lastScanUrl} → ${location.href}（SPA 换页）`);
+      const safeOld = dom.sanitizeUrl ? dom.sanitizeUrl(lastScanUrl) : lastScanUrl;
+      const safeNew = dom.sanitizeUrl ? dom.sanitizeUrl(location.href) : location.href;
+      AutoNext.debug(`页面 URL 变化：${safeOld} → ${safeNew}（SPA 换页）`);
       lastScanUrl = location.href;
       videoHandler.resetCycle();
       skip.onPageSettled('SPA 换页后');
@@ -78,6 +80,7 @@
   }
 
   /**
+   * 挂到 window 上，方便在控制台手工排查：
    * 别的 frame 的视频结束了：代为查找一次，命中就点。
    * @returns {boolean} 本 frame 是否处理了；返回 false 时消息会继续向上中继
    */
@@ -143,6 +146,36 @@
     );
   }
 
+  // —— SPA 路由监听与历史栈增强 ——————————————————————————————
+
+  function watchSpaNavigation() {
+    const notifyRoute = () => {
+      if (location.href !== lastScanUrl) {
+        const safeOld = dom.sanitizeUrl ? dom.sanitizeUrl(lastScanUrl) : lastScanUrl;
+        const safeNew = dom.sanitizeUrl ? dom.sanitizeUrl(location.href) : location.href;
+        AutoNext.debug(`SPA 路由切换检测：${safeOld} → ${safeNew}`);
+        lastScanUrl = location.href;
+        videoHandler.resetCycle();
+        scheduleScan(150);
+        skip.onPageSettled('SPA 换页后');
+      }
+    };
+
+    /**
+     * Isolated World 限制说明：
+     * MV3 content script 运行在独立的主机世界（isolated world），
+     * 宿主页面（MAIN world）中 React/Vue/Angular 前端框架调用 history.pushState / replaceState
+     * 只影响 MAIN 作用域内的上下文，不会经过 content script 中的 window.history 对象。
+     * 直接在 content script 中 monkey-patch pushState/replaceState 无法拦截页面发起的导航。
+     * 本项目遵守最小权限与零冲突安全规范，不向页面注入 MAIN world 脚本，而是结合：
+     * 1. window popstate 事件（用户前进/后退/历史出栈）
+     * 2. window hashchange 事件（基于锚点路由的单页切换）
+     * 3. urlCheckTimer 周期性轮询（兜底捕获 pushState/replaceState 驱动的 SPA 路径变更）
+     */
+    window.addEventListener('popstate', notifyRoute);
+    window.addEventListener('hashchange', notifyRoute);
+  }
+
   // —— MutationObserver：处理 SPA / 动态插入的播放器 ————————————
 
   function startObserver() {
@@ -159,7 +192,7 @@
       for (const mutation of mutations) {
         for (const node of mutation.addedNodes) {
           if (node.nodeType !== 1) continue;
-          if (node.tagName === 'VIDEO' || node.tagName === 'SOURCE' || (node.querySelector && node.querySelector('video'))) {
+          if (node.tagName === 'VIDEO' || node.tagName === 'SOURCE' || (node.querySelector && node.querySelector('video')) || node.shadowRoot) {
             relevant = true;
             break;
           }
@@ -186,17 +219,33 @@
   // —— 启停 ——————————————————————————————————————————————————
 
   function onEnabled() {
+    // 幂等保护：重复调用不得叠加 MutationObserver / watchdog / URL 轮询定时器
+    if (started) {
+      AutoNext.debug('已在启用状态，忽略重复的启用请求');
+      return;
+    }
     started = true;
     AutoNext.log(`自动连播已启用（${frameLabel}）`);
     scan();
     startObserver();
     videoHandler.startWatchdog(); // 兜底：平台在结尾自行暂停、不触发 ended 时也能识别
     urlCheckTimer = setInterval(() => {
-      if (location.href !== lastScanUrl) scheduleScan(100);
+      if (location.href !== lastScanUrl) {
+        const safeOld = dom.sanitizeUrl ? dom.sanitizeUrl(lastScanUrl) : lastScanUrl;
+        const safeNew = dom.sanitizeUrl ? dom.sanitizeUrl(location.href) : location.href;
+        AutoNext.debug(`轮询检测到页面 URL 变化：${safeOld} → ${safeNew}`);
+        lastScanUrl = location.href;
+        videoHandler.resetCycle();
+        scheduleScan(100);
+      }
     }, URL_CHECK_MS);
   }
 
   function onDisabled() {
+    if (!started && !urlCheckTimer) {
+      AutoNext.debug('已在停用状态，忽略重复的停用请求');
+      return;
+    }
     started = false;
     stopObserver();
     videoHandler.stopWatchdog();
@@ -204,32 +253,42 @@
     clearInterval(urlCheckTimer);
     urlCheckTimer = null;
     videoHandler.resetCycle();
+    AutoNext.log(`自动连播已停用（${frameLabel}）`);
   }
 
   /**
    * 开关变化（popup 改完立刻生效，无需刷新页面）
-   * @param {{autoNext?: boolean, autoRate2x?: boolean}} changed
+   * @param {{autoNext?: boolean, autoRate?: boolean, autoRate2x?: boolean, playbackRate?: number}} changed
    */
   function onSettingsChanged(changed = {}) {
     if ('autoNext' in changed) {
       if (changed.autoNext) onEnabled();
       else onDisabled();
     }
-    if ('autoRate2x' in changed && rateReady) {
-      rate.onToggle(changed.autoRate2x);
-      rate.applyAll('开关变更');
+    if (('autoRate' in changed || 'autoRate2x' in changed || 'playbackRate' in changed) && rateReady) {
+      const isRateOn = !!(AutoNext.settings.autoRate || AutoNext.settings.autoRate2x);
+      rate.onToggle(isRateOn);
+      if (isRateOn && 'playbackRate' in changed && rate.updateTargetRate) {
+        rate.updateTargetRate(changed.playbackRate);
+      } else {
+        rate.applyAll('开关变更');
+      }
     }
     if ('autoSkipNonVideo' in changed && rateReady) {
       if (changed.autoSkipNonVideo) skip.start();
       else skip.stop();
+    }
+    if ('customNextSelector' in changed) {
+      AutoNext.debug(`站点自定义选择器更新：${changed.customNextSelector}`);
     }
   }
 
   async function init() {
     await AutoNext.settings.load();
     watchUserNavigation();
+    watchSpaNavigation();
     AutoNext.settings.subscribe(onSettingsChanged);
-    // 自动二倍速先落地（它与连播开关互相独立，且要在扫描前就位）
+    // 自动倍速先落地（它与连播开关互相独立，且要在扫描前就位）
     rate.onToggle(rate.isEnabled());
     rateReady = true;
     // 自动跳过非视频页面：只在开关打开时启动
@@ -250,11 +309,25 @@
     }
   });
 
-  const utils = { attemptAutoPlay, scan, scheduleScan, onVideoEnded, onRemoteVideoEnded, onRemoteScan, onRemoteNavigated };
+  function onRemoteNavigating() {
+    AutoNext.debug('收到其他 frame 的正在跳转广播，加锁防并发');
+  }
+
+  const utils = {
+    attemptAutoPlay,
+    scan,
+    scheduleScan,
+    onVideoEnded,
+    onRemoteVideoEnded,
+    onRemoteScan,
+    onRemoteNavigated,
+    onRemoteNavigating
+  };
 
   messenger.listen({
     onVideoEnded: onRemoteVideoEnded,
     onScan: onRemoteScan,
+    onNavigating: onRemoteNavigating,
     onNavigated: onRemoteNavigated
   });
 
@@ -269,6 +342,15 @@
     stopObserver();
     clearInterval(urlCheckTimer);
   });
+
+  AutoNext.setRate = function(val) {
+    const target = rate.updateTargetRate ? rate.updateTargetRate(val) : rate.clampRate(val);
+    rate.applyAll('手动调用');
+    return target;
+  };
+  AutoNext.getEvents = function() {
+    return AutoNext.logger ? AutoNext.logger.getEvents() : [];
+  };
 
   // 供 DevTools 手动调试：__AUTO_NEXT__.stats() / .scan() / .clickNext()
   window.__AUTO_NEXT__ = {
@@ -288,16 +370,22 @@
     settings: AutoNext.settings,
     stats: () => videoHandler.stats(),
     scan: () => scan(),
-    candidates: () => AutoNext.buttonFinder.findCandidates().slice(0, 10),
-    clickNext: () => AutoNext.buttonFinder.clickNextButton(),
+    candidates: (sel) => AutoNext.buttonFinder.findCandidates(sel).slice(0, 10),
+    clickNext: (sel) => AutoNext.buttonFinder.clickNextButton(40, sel),
+    events: () => (AutoNext.getEvents ? AutoNext.getEvents() : []),
     /** 手动触发一次“跳过当前非视频页面”的判断（用于临时验证） */
     trySkip() {
       return skip.attemptSkip('手动调用');
     },
-    /** 手动把当前页面所有播放器设为 2 倍速（用于临时验证） */
+    /** 手动把当前页面所有播放器设为 2 倍速（兼容旧 API） */
     rate2x() {
+      return this.setRate(2.0);
+    },
+    /** 手动设置目标播放速率 */
+    setRate(val) {
+      const target = rate.updateTargetRate ? rate.updateTargetRate(val) : rate.clampRate(val);
       const changed = rate.applyAll('手动调用');
-      return changed ? `已对 ${changed} 个播放器设为 ${rate.options.targetRate}x` : '所有播放器已是目标倍速';
+      return changed ? `已对 ${changed} 个播放器设为 ${target}x` : `当前播放器已处于 ${target}x 状态`;
     },
     debug(on) {
       const verbose = on !== false;

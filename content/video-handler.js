@@ -122,11 +122,19 @@
     const firstDetection = !rec.detectedLogged;
     if (firstDetection) {
       rec.detectedLogged = true;
-      AutoNext.log('video detected', `${Math.round(video.duration)}s`, video.currentSrc || '(无 src)',
+      const sanitizedSrc = dom.sanitizeUrl ? dom.sanitizeUrl(video.currentSrc || '') : (video.currentSrc || '');
+      AutoNext.log('video detected', `${Math.round(video.duration)}s`, sanitizedSrc || '(无 src)',
         `| ${reason}`);
+      if (AutoNext.addEvent) {
+        AutoNext.addEvent('VIDEO_DETECTED', {
+          duration: Math.round(video.duration || 0),
+          src: sanitizedSrc,
+          reason
+        });
+      }
     }
     state.active = video;
-    // 自动二倍速：检测到视频后立刻尝试一次（幂等，已是 2x 时不会做任何事）
+    // 自动倍速：检测到视频后立刻尝试一次（幂等，已是目标倍速时不会做任何事）
     rate.apply(video, 'detected');
     // iframe 重建后，loadedmetadata 可能早于 content script 注入；首次扫描就是唯一信号。
     // 因此发现一个新的、已就绪且暂停的视频时，直接启动有上限的自动播放窗口。
@@ -266,6 +274,16 @@
       cycleNavigated: cycle.navigated
     };
 
+    if (AutoNext.addEvent) {
+      AutoNext.addEvent('VIDEO_PAUSED', {
+        currentTime: pausedAt,
+        duration,
+        nearEnd,
+        playedSeconds: rec ? Number(rec.played.toFixed(1)) : 0,
+        pageHidden: document.hidden
+      });
+    }
+
     // 某些课程明确要求“任务点完成前不可倍速”：播放器会先响应 play，随后立即 pause。
     // 只在新视频的短宽限期、页面可见、数据已就绪且仍在开头时回退当前源到 1x。
     const inPlayGrace = Date.now() < state.playGraceUntil;
@@ -332,6 +350,12 @@
     rec.lastEndedPlayed = rec.played;
 
     AutoNext.log('video ended', `${Math.round(video.duration)}s`);
+    if (AutoNext.addEvent) {
+      AutoNext.addEvent('VIDEO_ENDED', {
+        duration: Math.round(video.duration || 0),
+        played: Number(rec.played.toFixed(1))
+      });
+    }
     AutoNext.debug('结束时的播放统计：', {
       currentTime: Number(video.currentTime.toFixed(2)),
       duration: Number(video.duration.toFixed(2)),
@@ -421,7 +445,10 @@
 
   function scan() {
     let count = 0;
-    document.querySelectorAll('video').forEach((video) => {
+    const list = (dom && typeof dom.findVideos === 'function')
+      ? dom.findVideos(document)
+      : Array.from(document.querySelectorAll('video'));
+    list.forEach((video) => {
       attach(video);
       count += 1;
     });
@@ -559,12 +586,17 @@
   }
 
   function findButtonAndClick() {
-    const btn = AutoNext.buttonFinder.clickNextButton();
+    const customSel = AutoNext.settings ? AutoNext.settings.customNextSelector : '';
+    const btn = AutoNext.buttonFinder.clickNextButton(40, customSel);
     if (!btn) return false;
     cycle.navigated = true;
     messenger.reportNavigated(); // 只有真的点下去了才广播，别的 frame 才不会重复点
     messenger.setBadge('→', '#16a34a'); // 图标上显示"已跳转"
     toast.show('已跳转下一节', 'success');
+    if (AutoNext.addEvent) {
+      const btnText = (dom && dom.ownTextOf ? dom.ownTextOf(btn) : '') || btn.textContent || btn.tagName;
+      AutoNext.addEvent('NAVIGATED', { button: String(btnText).slice(0, 40) });
+    }
     return true;
   }
 
@@ -691,6 +723,9 @@
     cycle.running = true;
     cycle.attempts = 0;
     AutoNext.log('视频已播完，开始跳转', `(${reason})`);
+    if (AutoNext.addEvent) {
+      AutoNext.addEvent('NAVIGATION_TRIGGERED', { reason: reason || '' });
+    }
 
     schedule(attemptNext, 800);
   }
@@ -771,11 +806,25 @@
   function diagnostics() {
     const video = state.active || Array.from(state.byVideo.keys())[0] || null;
     const rec = video ? recordOf(video, { create: false }) : null;
+    const events = AutoNext.getEvents ? AutoNext.getEvents() : [];
+    const customSelector = AutoNext.settings ? AutoNext.settings.customNextSelector : '';
+    const pageUrl = dom.sanitizeUrl ? dom.sanitizeUrl(location.href) : location.href;
+    const currentSrc = video ? (dom.sanitizeUrl ? dom.sanitizeUrl(sourceKeyOf(video)) : sourceKeyOf(video)) : '';
     if (!video || !rec) {
-      return { hasVideo: false, cycle: { ...cycle }, lastEndedAt: state.lastEndedAt };
+      return {
+        hasVideo: false,
+        pageUrl,
+        currentSrc,
+        cycle: { ...cycle },
+        lastEndedAt: state.lastEndedAt,
+        events,
+        customSelector
+      };
     }
     return {
       hasVideo: true,
+      pageUrl,
+      currentSrc,
       endedBound: rec.endedBound === true,
       endedEverFired: rec.lastEndedAt > 0,
       finishedByWatchdog: rec.finishedByWatchdog === true,
@@ -795,26 +844,39 @@
       paused: video.paused,
       ended: video.ended,
       messengerStats: messenger.stats ? { ...messenger.stats } : null,
-      cycle: { ...cycle }
+      cycle: { ...cycle },
+      events,
+      customSelector
     };
   }
 
   function stats() {
     const videos = Array.from(state.byVideo.keys());
     const rates = rate.snapshot ? rate.snapshot() : [];
+    const sanitizedUrl = dom.sanitizeUrl ? dom.sanitizeUrl(location.href) : location.href;
+    const effectiveTargetRate = (AutoNext.settings && AutoNext.settings.playbackRate) || (rate.options && rate.options.targetRate) || 2.0;
     return {
       frame: messenger.isTop ? 'top' : 'iframe',
-      url: location.href,
+      url: sanitizedUrl,
+      rawUrl: location.href,
       cyclesRun,
       autoNext: !!AutoNext.settings.enabled,
+      autoRate: !!(AutoNext.settings && (AutoNext.settings.autoRate || AutoNext.settings.autoRate2x)),
       autoRate2x: rate.isEnabled ? rate.isEnabled() : false,
-      active: state.active ? { duration: state.active.duration, paused: state.active.paused, src: sourceKeyOf(state.active) } : null,
+      playbackRate: effectiveTargetRate,
+      customSelector: (AutoNext.settings && AutoNext.settings.customNextSelector) || '',
+      hasSiteOverride: !!(AutoNext.settings && AutoNext.settings.hasSiteOverride),
+      active: state.active ? {
+        duration: state.active.duration,
+        paused: state.active.paused,
+        src: dom.sanitizeUrl ? dom.sanitizeUrl(sourceKeyOf(state.active)) : sourceKeyOf(state.active)
+      } : null,
       videos: videos.map((video, index) => ({
         duration: Number.isFinite(video.duration) ? Number(video.duration.toFixed(1)) : null,
         paused: video.paused,
         currentTime: Number(video.currentTime.toFixed(1)),
         playbackRate: video.playbackRate,
-        src: sourceKeyOf(video)
+        src: dom.sanitizeUrl ? dom.sanitizeUrl(sourceKeyOf(video)) : sourceKeyOf(video)
       })),
       rates,
       diagnostics: diagnostics(),

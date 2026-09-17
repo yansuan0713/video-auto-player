@@ -141,6 +141,64 @@
       } catch (_) {
         return value;
       }
+    },
+
+    /**
+     * 对 URL 和媒体源做敏感信息脱敏（去除 token/ticket/sign/auth 等）
+     * 诊断输出、日志展示与一键导出时必须使用此方法处理 URL
+     */
+    sanitizeUrl(rawUrl) {
+      if (!rawUrl || typeof rawUrl !== 'string') return '';
+      // 精确键：短键或易与业务参数撞车的键（sig/at_/credential 等）必须整体匹配，
+      // 否则 design(含 sign)、signal(含 sig) 这类正常参数会被误脱敏。
+      const SENSITIVE_KEYS = /^(token|ticket|auth|authorization|session|sessionid|jwt|access_token|accesstoken|secret|signature|sign|sig|at_|credential|x-amz-signature|x-amz-credential|x-amz-security-token|key|password|pwd|code|user_token|enc)$/i;
+      // 子串键：只保留够长、语义明确、几乎不会作为普通词出现的片段
+      const SENSITIVE_PATTERN = /token|ticket|authorization|jwt|signature|secret|credentials|sessionid|password/i;
+      try {
+        const base = typeof window !== 'undefined' && window.location ? window.location.href : 'http://localhost';
+        const parsed = new URL(rawUrl, base);
+        const keys = Array.from(parsed.searchParams.keys());
+        for (const key of keys) {
+          if (SENSITIVE_KEYS.test(key) || SENSITIVE_PATTERN.test(key)) {
+            parsed.searchParams.set(key, '[REDACTED]');
+          }
+        }
+        if (parsed.hash && /token|ticket|auth|sign|key|secret|jwt|session|enc|at_|sig|credential/i.test(parsed.hash)) {
+          parsed.hash = '#[REDACTED]';
+        }
+        return parsed.toString().replace(/%5BREDACTED%5D/gi, '[REDACTED]');
+      } catch (_) {
+        return rawUrl.replace(
+          /([?&](?:token|ticket|auth|jwt|sign|sig|at_|credential|x-amz-signature|x-amz-credential|x-amz-security-token|key|secret|session|enc)=)[^&#]*/gi,
+          '$1[REDACTED]'
+        );
+      }
+    },
+
+    /**
+     * 发现页面中的全部 <video> 元素，支持递归穿透 open Shadow DOM。
+     * （封闭式 closed Shadow DOM 属于浏览器标准边界，由规范限制外部脚本读取）
+     */
+    findVideos(root = document) {
+      if (!root) return [];
+      const videos = [];
+      const seen = new Set();
+      const walk = (node) => {
+        if (!node || seen.has(node)) return;
+        seen.add(node);
+        if (node.tagName === 'VIDEO') {
+          videos.push(node);
+        }
+        if (node.shadowRoot) {
+          walk(node.shadowRoot);
+        }
+        const children = node.children || [];
+        for (let i = 0; i < children.length; i += 1) {
+          walk(children[i]);
+        }
+      };
+      walk(root.documentElement || root);
+      return videos;
     }
   };
 

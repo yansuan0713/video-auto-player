@@ -61,7 +61,10 @@
   ];
 
   /** 反向词：命中则重罚，避免把“上一节 / 返回目录 / 下一章练习”当成导航 */
-  const NEGATIVE = ['上一节', '上一章', '上一个', '上一页', '返回', 'back', 'prev', 'previous', 'replay', '重播', '重看'];
+  const NEGATIVE = [
+    '上一节', '上一章', '上一个', '上一页', '返回', 'back', 'prev', 'previous', 'replay', '重播', '重看',
+    '提交', '交卷', '答题', '测验', '考试', 'submit', 'quiz', 'exam'
+  ];
 
   const TEXT_LIMIT = 60; // 文本太长基本是容器，不是按钮
 
@@ -147,16 +150,48 @@
   }
 
   /**
-   * 扫描当前 document，返回按可信度降序排列的候选按钮
+   * 检查元素是否属于表单或提交按钮（严禁自动点击表单/测验提交）
+   *
+   * 只认“元素自身的表单/提交语义”，**绝不沿祖先链做无条件 FORM 匹配**：
+   * 很多平台（ASP.NET WebForms 风格的 <form runat="server">）会用 form 包住整个 body，
+   * 一旦按祖先 form 排除，页面里所有按钮都会被否掉，导致插件完全失效。
+   * 测验/提交类误触由下面的显式判断 + 文本反向词共同兜住。
+   */
+  function isFormOrSubmit(el) {
+    if (!el || !el.tagName) return false;
+    const tag = String(el.tagName).toUpperCase();
+    if (tag === 'FORM') return true;
+    const type = el.type || (typeof el.getAttribute === 'function' && el.getAttribute('type'));
+    if (type && String(type).toLowerCase() === 'submit') return true;
+    if (typeof el.getAttribute === 'function') {
+      const role = el.getAttribute('role');
+      if (role && String(role).toLowerCase() === 'submit') return true;
+      const action = el.getAttribute('data-action');
+      if (action && String(action).toLowerCase() === 'submit') return true;
+    }
+    // el.form 只有表单关联元素（button/input/select/textarea 等）才有值，
+    // <a>/<div> 导航元素为 null，因此不会误伤“下一节”链接
+    if (el.form) return true;
+    return false;
+  }
+
+  /**
+   * 扫描当前 document，返回按可信度降序排列的候选按钮。
+   * 支持用户为特定站点配置的自定义 CSS 选择器：自定义规则优先（分值 1000），
+   * 但必须继续经受反向词（“上一节/返回/重播/提交/测验”）、表单排除、禁用态和可见性的严格安全检验。
+   * @param {string} [customSelector] 可选的自定义选择器（缺省自动取 settings 中的站点规则）
    * @returns {Array<{el: HTMLElement, score: number, reason: string, text: string}>}
    */
-  function findCandidates() {
+  function findCandidates(customSelector) {
     const selectorHits = collectSelectorHits();
     const results = new Map();
 
     const consider = (rawEl, extraScore, reason) => {
       if (!rawEl || !rawEl.tagName || rawEl === document.body || rawEl === document.documentElement) return;
       const el = closestClickable(rawEl) || rawEl;
+
+      // 严防误触：表单或提交按钮一律排除，绝不自动提交作业/测验
+      if (isFormOrSubmit(rawEl) || isFormOrSubmit(el)) return;
 
       // 负面词只看元素自身文字：父容器里的“上一节”按钮不该把“下一节”一起否掉
       const ownText = dom.ownTextOf(el);
@@ -192,6 +227,44 @@
       }
     };
 
+    // 0) 自定义选择器优先匹配（若配置）
+    const effectiveSelector = typeof customSelector === 'string' && customSelector.trim()
+      ? customSelector.trim()
+      : (AutoNext.settings && typeof AutoNext.settings.customNextSelector === 'string'
+        ? AutoNext.settings.customNextSelector.trim()
+        : '');
+
+    if (effectiveSelector) {
+      const customMatches = safeQueryAll(effectiveSelector);
+      for (const rawEl of customMatches) {
+        if (!rawEl || !rawEl.tagName || rawEl === document.body || rawEl === document.documentElement) continue;
+        const el = closestClickable(rawEl) || rawEl;
+
+        // 安全底线：即使用户配置的选择器命中了表单提交控件，也坚决排除
+        if (isFormOrSubmit(rawEl) || isFormOrSubmit(el)) {
+          AutoNext.debug('自定义选择器命中表单提交元素，已安全排除');
+          continue;
+        }
+
+        const ownText = dom.ownTextOf(el);
+        // 安全底线：即使用户填的选择器命中了“上一节/返回/重播/提交/测验”，也坚决排除，绝不反向跳转
+        if (hasNegative(dom.normalize(ownText))) {
+          AutoNext.debug(`自定义选择器命中元素含有反向词，已安全排除：${ownText}`);
+          continue;
+        }
+        if (dom.isDisabled(el) || !dom.isVisible(el)) continue;
+
+        const text = dom.textOf(el);
+        const normalized = dom.normalize(text);
+        results.set(el, {
+          el,
+          score: 1000,
+          reason: `自定义规则 [${effectiveSelector}]`,
+          text: normalized
+        });
+      }
+    }
+
     // 1) 选择器命中的元素
     for (const el of selectorHits.keys()) consider(el, 0, 'selector');
 
@@ -207,9 +280,10 @@
   /**
    * 找到最可信的“下一个”按钮
    * @param {number} minScore 可信度阈值，低于该值视为“没找到”
+   * @param {string} [customSelector] 可选的自定义选择器
    */
-  function findNextButton(minScore = 40) {
-    const candidates = findCandidates();
+  function findNextButton(minScore = 40, customSelector) {
+    const candidates = findCandidates(customSelector);
     const best = candidates[0];
     if (!best || best.score < minScore) {
       if (best) AutoNext.debug(`候选按钮可信度不足（${best.score} < ${minScore}），视为未找到`);
@@ -218,12 +292,16 @@
     return best;
   }
 
-  /** 在当前页面查找并点击；返回被点击的元素或 null */
-  function clickNextButton(minScore = 40) {
-    const found = findNextButton(minScore);
+  /**
+   * 在当前页面查找并点击；返回被点击的元素或 null
+   * @param {number} minScore 可信度阈值
+   * @param {string} [customSelector] 可选的自定义选择器
+   */
+  function clickNextButton(minScore = 40, customSelector) {
+    const found = findNextButton(minScore, customSelector);
     if (!found) {
       AutoNext.warn('next lesson not found：页面里没有找到可信的“下一节 / 下一个任务点”按钮');
-      AutoNext.debug('候选列表：', findCandidates().slice(0, 8).map((c) => `${c.el.tagName}=${c.score}(${c.reason})`));
+      AutoNext.debug('候选列表：', findCandidates(customSelector).slice(0, 8).map((c) => `${c.el.tagName}=${c.score}(${c.reason})`));
       return null;
     }
     AutoNext.log('next lesson found', found.text || '(无文字)', `score=${found.score}`, found.reason);

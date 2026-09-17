@@ -13,9 +13,9 @@
   const AutoNext = window.AutoNext;
 
   const DEFAULT_OPTIONS = {
-    /** 目标倍速 */
-    targetRate: 2.0,
-    /** 浮点比较容差：差值小于这个值就认为"已经是 2 倍速" */
+    /** 目标倍速，缺省为 null，由 settings.playbackRate 驱动 */
+    targetRate: null,
+    /** 浮点比较容差：差值小于这个值就认为"已经是目标倍速" */
     epsilon: 0.01,
     /** 同一个视频两次纠正之间的最小间隔，避免与页面互抢导致死循环 */
     minReapplyInterval: 300
@@ -26,13 +26,31 @@
   /** @type {WeakMap<HTMLVideoElement, object>} */
   const records = new WeakMap();
 
-  /** 当前是否应该强制二倍速 */
-  function isEnabled() {
-    const settings = AutoNext.settings;
-    return !!(settings && settings.autoRate2x);
+  /** 安全限制倍速范围（0.1x ~ 16.0x） */
+  function clampRate(rate) {
+    const num = Number(rate);
+    if (!Number.isFinite(num) || num <= 0) return 2.0;
+    return Math.min(Math.max(Number(num.toFixed(2)), 0.1), 16.0);
   }
 
-  /** 差值大于容差才算"不是 2 倍速"——这是避免事件死循环的关键判断 */
+  /** 获取当前生效的目标倍速 */
+  function getTargetRate() {
+    if (typeof options.targetRate === 'number' && options.targetRate > 0) {
+      return clampRate(options.targetRate);
+    }
+    if (AutoNext.settings && typeof AutoNext.settings.playbackRate === 'number' && AutoNext.settings.playbackRate > 0) {
+      return clampRate(AutoNext.settings.playbackRate);
+    }
+    return 2.0;
+  }
+
+  /** 当前是否应该强制应用倍速 */
+  function isEnabled() {
+    const settings = AutoNext.settings;
+    return !!(settings && (settings.autoRate || settings.autoRate2x));
+  }
+
+  /** 差值大于容差才算"不是目标倍速"——这是避免事件死循环的关键判断 */
   function needsChange(video, target) {
     return Math.abs(video.playbackRate - target) > options.epsilon;
   }
@@ -45,7 +63,7 @@
       bound: false,
       /** 被限频推迟的恢复任务（而不是丢掉这次恢复） */
       retryTimer: null,
-      /** 当前视频源被平台判定为不允许倍速后，暂停对该源强制 2x */
+      /** 当前视频源被平台判定为不允许倍速后，暂停对该源强制倍速 */
       suspendedSourceKey: '',
       fallbackCount: 0
     };
@@ -73,14 +91,14 @@
   }
 
   /**
-   * 把视频设为 2 倍速。
+   * 把视频设为目标倍速。
    * @returns {boolean} 是否真的改动了
    */
   function setRate(video, reason) {
-    const target = options.targetRate;
+    const target = getTargetRate();
     const rec = records.get(video);
     if (isSuspendedForCurrentSource(video, rec)) return false;
-    if (!needsChange(video, target)) return false; // ★ 已经是 2 倍速，直接返回，不会触发新的 ratechange
+    if (!needsChange(video, target)) return false; // ★ 已经是目标倍速，直接返回，不会触发新的 ratechange
 
     clearRetry(rec);
     if (rec) rec.applying = true;
@@ -101,7 +119,11 @@
     }
 
     if (rec) rec.lastAppliedAt = Date.now();
-    AutoNext.log('playback rate -> 2x', reason || '', `rate=${video.playbackRate}`);
+    const rateLabel = Math.abs(target - 2) <= 0.01 ? 'playback rate -> 2x' : `playback rate -> ${target}x`;
+    AutoNext.log(rateLabel, reason || '', `rate=${video.playbackRate}`);
+    if (AutoNext.addEvent) {
+      AutoNext.addEvent('RATE_APPLIED', { rate: video.playbackRate, target, reason: reason || '' });
+    }
     return true;
   }
 
@@ -112,7 +134,8 @@
     const rec = records.get(video);
     if (rec && rec.applying) return; // 是我们自己设的，不必响应
     if (isSuspendedForCurrentSource(video, rec)) return; // 当前源已因平台限制回退到 1x
-    if (!needsChange(video, options.targetRate)) return; // 已经是 2 倍速
+    const target = getTargetRate();
+    if (!needsChange(video, target)) return; // 已经是目标倍速
 
     const now = Date.now();
     const waited = rec ? now - rec.lastAppliedAt : Infinity;
@@ -124,13 +147,13 @@
         clearRetry(rec);
         rec.retryTimer = setTimeout(() => {
           rec.retryTimer = null;
-          if (isEnabled() && needsChange(video, options.targetRate)) setRate(video, '(限频后恢复)');
+          if (isEnabled() && needsChange(video, getTargetRate())) setRate(video, '(限频后恢复)');
         }, delay);
       }
       return;
     }
 
-    AutoNext.debug('检测到倍速被页面改动，恢复 2 倍速');
+    AutoNext.debug(`检测到倍速被页面改动，恢复 ${target} 倍速`);
     setRate(video, '(页面改动后恢复)');
   }
 
@@ -157,7 +180,7 @@
 
   /**
    * 平台在新视频开头因倍速限制而暂停时，对当前视频源回退到正常速度。
-   * 只暂停这个源的自动二倍速；换源后会重新尝试，不影响后续允许倍速的视频。
+   * 只暂停这个源的自动倍速；换源后会重新尝试，不影响后续允许倍速的视频。
    */
   function fallbackToNormal(video, reason) {
     if (!video || typeof video.playbackRate !== 'number' || !isEnabled()) return false;
@@ -180,6 +203,9 @@
     rec.lastAppliedAt = 0;
     rec.fallbackCount += 1;
     AutoNext.warn('检测到当前视频可能禁止倍速，已回退到 1.0x', reason || '');
+    if (AutoNext.addEvent) {
+      AutoNext.addEvent('RATE_FALLBACK', { toRate: 1.0, reason: reason || '' });
+    }
     return true;
   }
 
@@ -198,7 +224,9 @@
   /** 对当前页面**所有** video 应用一次（首个 video 找不到时兜底用） */
   function applyAll(reason) {
     if (!isEnabled()) return 0;
-    const videos = Array.from(document.querySelectorAll('video'));
+    const videos = AutoNext.dom && AutoNext.dom.findVideos
+      ? AutoNext.dom.findVideos(document)
+      : Array.from(document.querySelectorAll('video'));
     let count = 0;
     for (const video of videos) {
       if (apply(video, reason)) count += 1;
@@ -213,22 +241,39 @@
   /** 开关切换时调用：打开立刻生效，关闭把已改的恢复成 1.0 */
   function onToggle(enabled) {
     if (enabled) {
+      const target = getTargetRate();
       const changed = applyAll('(开关已开启)');
-      AutoNext.log('自动二倍速已开启', changed ? `已应用到 ${changed} 个播放器` : '等待播放器出现');
+      const label = Math.abs(target - 2) <= 0.01 ? '自动二倍速已开启' : `自动倍速(${target}x)已开启`;
+      AutoNext.log(label, changed ? `已应用到 ${changed} 个播放器` : '等待播放器出现');
       return;
     }
-    const videos = Array.from(document.querySelectorAll('video'));
+    const videos = AutoNext.dom && AutoNext.dom.findVideos
+      ? AutoNext.dom.findVideos(document)
+      : Array.from(document.querySelectorAll('video'));
     let restored = 0;
     for (const video of videos) {
       const rec = records.get(video);
-      clearRetry(rec); // 取消还没执行的恢复任务，否则关掉开关后又被改回 2.0
+      clearRetry(rec); // 取消还没执行的恢复任务，否则关掉开关后又被改回倍速
       if (Math.abs(video.playbackRate - 1) <= options.epsilon) continue;
       try {
         video.playbackRate = 1;
         restored += 1;
       } catch (_) { /* 忽略 */ }
     }
-    AutoNext.log('自动二倍速已关闭', restored ? `已把 ${restored} 个播放器恢复为 1.0x` : '');
+    AutoNext.log('自动倍速已关闭', restored ? `已把 ${restored} 个播放器恢复为 1.0x` : '');
+  }
+
+  /** 动态更新目标速率并立即对播放器应用 */
+  function updateTargetRate(newRate) {
+    const clamped = clampRate(newRate);
+    options.targetRate = clamped;
+    if (AutoNext.settings) {
+      AutoNext.settings.playbackRate = clamped;
+    }
+    if (isEnabled()) {
+      applyAll('(速率更新)');
+    }
+    return clamped;
   }
 
   AutoNext.rateController = {
@@ -238,6 +283,9 @@
     fallbackToNormal,
     onToggle,
     isEnabled,
+    clampRate,
+    getTargetRate,
+    updateTargetRate,
     /** 当前页面各播放器的倍速，供 __AUTO_NEXT__.stats() 展示 */
     snapshot() {
       return Array.from(document.querySelectorAll('video')).map((video) => ({
@@ -245,6 +293,7 @@
         fallbackCount: (records.get(video) && records.get(video).fallbackCount) || 0,
         rate: video.playbackRate,
         defaultRate: video.defaultPlaybackRate,
+        targetRate: getTargetRate(),
         paused: video.paused
       }));
     },
@@ -253,7 +302,7 @@
       return { ...options };
     },
     get options() {
-      return { ...options };
+      return { ...options, targetRate: getTargetRate() };
     }
   };
 
