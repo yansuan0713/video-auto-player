@@ -1434,4 +1434,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { createSandbox, loadExtension, runTimers, buildLessonPage, check, results, runAllTests };
+module.exports = { createSandbox, loadExtension, runTimers, tickIntervals, buildLessonPage, check, results, runAllTests };

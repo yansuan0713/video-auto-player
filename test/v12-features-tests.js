@@ -20,7 +20,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const { FakeElement, FakeVideoElement, FakeEvent } = require('./fake-dom');
-const { createSandbox, loadExtension, runTimers, buildLessonPage } = require('./run-tests');
+const { createSandbox, loadExtension, runTimers, tickIntervals, buildLessonPage } = require('./run-tests');
 const { DEFAULTS, migrateSettings } = require('../background');
 
 const results = [];
@@ -185,6 +185,62 @@ async function testSiteSpecificSettings() {
     check('未配置站点使用全局默认', api.settings.get().autoRate === true);
     check('全局 2.0x 正常生效', page.video.playbackRate === 2.0);
   }
+
+  // 3.3 嵌套 iframe 场景未单独配置时安全继承顶层规则
+  {
+    const page = buildLessonPage({});
+    const { sandbox, timers } = createSandbox({
+      page,
+      storage: {
+        autoNext: true,
+        autoRate: true,
+        autoRate2x: true,
+        playbackRate: 2.0,
+        siteSettings
+      }
+    });
+    // 模拟 iframe 宿主环境
+    sandbox.window.top = {
+      location: { hostname: 'special-mooc.edu.cn' }
+    };
+    sandbox.location.href = 'https://player-cdn.cn/embed/video.html';
+    const api = loadExtension(sandbox);
+    await runTimers(timers);
+
+    check('iframe 自身无配置时继承顶层 special-mooc 规则', api.settings.get().autoRate === false);
+    check('iframe 视频应用所继承顶层规则的 1.0x（而非全局 2.0x）', page.video.playbackRate === 1.0);
+  }
+
+  // 3.4 嵌套 iframe 自身拥有显式配置时，自身配置优先于顶层
+  {
+    const page = buildLessonPage({});
+    const iframeSpecificSettings = {
+      ...siteSettings,
+      'player-cdn.cn': {
+        override: true,
+        autoRate: true,
+        playbackRate: 3.0
+      }
+    };
+    const { sandbox, timers } = createSandbox({
+      page,
+      storage: {
+        autoNext: true,
+        autoRate: false,
+        playbackRate: 1.0,
+        siteSettings: iframeSpecificSettings
+      }
+    });
+    sandbox.window.top = {
+      location: { hostname: 'special-mooc.edu.cn' }
+    };
+    sandbox.location.href = 'https://player-cdn.cn/embed/video.html';
+    const api = loadExtension(sandbox);
+    await runTimers(timers);
+
+    check('iframe 拥有自身规则时优先使用自身规则', api.settings.get().playbackRate === 3.0);
+    check('iframe 自身倍速 3.0x 独立生效', page.video.playbackRate === 3.0);
+  }
 }
 
 // ————————————————————————————————————————————————————————————————
@@ -296,13 +352,80 @@ async function testCustomSelectorAndSafetyFilters() {
     check('处于 display: none 的自定义按钮被排除', !clicked.includes('hidden-btn'));
     check('隐藏按钮排除后回退到可见候选按钮', clicked.includes('fallback-btn'));
   }
+
+  // 4.5 表单与提交按钮防御排除（严禁自动点击表单与测验提交控件）
+  {
+    const doc = new FakeElement('html');
+    const body = doc.append(new FakeElement('body'));
+    const video = body.append(new FakeVideoElement({ duration: 600 }));
+    const clicked = [];
+
+    // 表单内部按钮
+    const form = body.append(new FakeElement('form', { id: 'quiz-form' }));
+    const formSubmitBtn = form.append(new FakeElement('button', { id: 'btn-quiz-submit', text: '下一节' }));
+    formSubmitBtn.addEventListener('click', () => clicked.push('form-submit'));
+
+    // 普通 type="submit" 提交按钮
+    const rawSubmitBtn = body.append(new FakeElement('button', { id: 'raw-submit', attrs: { type: 'submit' }, text: '下一节' }));
+    rawSubmitBtn.addEventListener('click', () => clicked.push('raw-submit'));
+
+    // 合法外部下一节按钮
+    const trueNextBtn = body.append(new FakeElement('button', { class: 'btn-next', text: '下一节' }));
+    trueNextBtn.addEventListener('click', () => clicked.push('true-next'));
+
+    const { sandbox, timers } = createSandbox({
+      page: { documentElement: doc, body, video, state: { clicked } },
+      storage: { autoNext: true }
+    });
+    loadExtension(sandbox);
+    await runTimers(timers);
+
+    video.watch(30);
+    video.finish();
+    await runTimers(timers);
+
+    check('位于 form 内部的伪“下一节”按钮被严格排除', !clicked.includes('form-submit'));
+    check('type="submit" 提交按钮被严格排除', !clicked.includes('raw-submit'));
+    check('表单/提交控件排除后安全命中真正“下一节”按钮', clicked.includes('true-next'));
+  }
+
+  // 4.6 测验/答题/交卷等负面词排除（即使通过自定义选择器指定也予以拒绝）
+  {
+    const doc = new FakeElement('html');
+    const body = doc.append(new FakeElement('body'));
+    const video = body.append(new FakeVideoElement({ duration: 600 }));
+    const clicked = [];
+
+    const quizBtn1 = body.append(new FakeElement('button', { id: 'exam-btn', text: '提交测验答题' }));
+    quizBtn1.addEventListener('click', () => clicked.push('exam-btn'));
+
+    const quizBtn2 = body.append(new FakeElement('button', { id: 'submit-exam', text: '交卷并查看分数' }));
+    quizBtn2.addEventListener('click', () => clicked.push('submit-exam'));
+
+    const trueNext = body.append(new FakeElement('button', { id: 'real-next', text: '下一节' }));
+    trueNext.addEventListener('click', () => clicked.push('real-next'));
+
+    const { sandbox, timers } = createSandbox({
+      page: { documentElement: doc, body, video, state: { clicked } },
+      storage: { autoNext: true, customNextSelector: '#exam-btn' }
+    });
+    loadExtension(sandbox);
+    await runTimers(timers);
+
+    video.watch(30);
+    video.finish();
+    await runTimers(timers);
+
+    check('含有“提交/测验/交卷/答题/exam/quiz”的候选被严格排除', !clicked.includes('exam-btn') && !clicked.includes('submit-exam'));
+    check('负面考试词过滤后回退至真实课程章节', clicked.includes('real-next'));
+  }
 }
 
 // ————————————————————————————————————————————————————————————————
 // 5. 敏感参数脱敏安全测试
 // ————————————————————————————————————————————————————————————————
 async function testUrlSanitization() {
-  console.log('\n[Suite 5] 敏感参数脱敏 (token / ticket / auth / sign / key)');
+  console.log('\n[Suite 5] 敏感参数脱敏 (token / ticket / auth / jwt / sign / key / secret / session / enc)');
 
   const page = buildLessonPage({});
   const { sandbox, timers } = createSandbox({ page, storage: { autoNext: true } });
@@ -310,24 +433,29 @@ async function testUrlSanitization() {
   await runTimers(timers);
 
   const dom = api.dom;
-  const rawUrl = 'https://mooc.example.com/play?chapterId=101&token=eyJhbGciOiJIUzI1NiJ9&ticket=TICK-999&sign=a1b2c3d4&key=my_secret_key&auth=token123&courseTitle=math';
+  const rawUrl = 'https://mooc.example.com/play?chapterId=101&token=sec_tok_1&ticket=sec_tick_2&auth=sec_auth_3&jwt=sec_jwt_4&sign=sec_sign_5&key=sec_key_6&secret=sec_secret_7&session=sec_sess_8&enc=sec_enc_9&courseTitle=math#token=hash_tok_10';
   const clean = dom.sanitizeUrl(rawUrl);
 
   check('token 被替换为 [REDACTED]', clean.includes('token=[REDACTED]'));
   check('ticket 被替换为 [REDACTED]', clean.includes('ticket=[REDACTED]'));
+  check('auth 被替换为 [REDACTED]', clean.includes('auth=[REDACTED]'));
+  check('jwt 被替换为 [REDACTED]', clean.includes('jwt=[REDACTED]'));
   check('sign 被替换为 [REDACTED]', clean.includes('sign=[REDACTED]'));
   check('key 被替换为 [REDACTED]', clean.includes('key=[REDACTED]'));
-  check('auth 被替换为 [REDACTED]', clean.includes('auth=[REDACTED]'));
+  check('secret 被替换为 [REDACTED]', clean.includes('secret=[REDACTED]'));
+  check('session 被替换为 [REDACTED]', clean.includes('session=[REDACTED]'));
+  check('enc 被替换为 [REDACTED]', clean.includes('enc=[REDACTED]'));
+  check('URL hash 中敏感参数被脱敏', clean.includes('#[REDACTED]'));
   check('业务参数 chapterId 与 courseTitle 保持原样', clean.includes('chapterId=101') && clean.includes('courseTitle=math'));
-  check('敏感明文 token 完全消除', !clean.includes('eyJhbGciOiJIUzI1NiJ9'));
+  check('所有敏感明文均无泄漏', !/sec_tok|sec_tick|sec_auth|sec_jwt|sec_sign|sec_key|sec_secret|sec_sess|sec_enc|hash_tok/.test(clean));
 
   // diagnostics() 中的脱敏
-  sandbox.location.href = 'https://study.test/video?token=super_secret_token_123';
-  page.video.src = 'https://cdn.test/stream.m3u8?sign=sensitive_sign_456';
+  sandbox.location.href = 'https://study.test/video?token=super_secret_token_123&session=sess_abc_456';
+  page.video.src = 'https://cdn.test/stream.m3u8?sign=sensitive_sign_456&enc=encrypted_key_789';
   page.video.currentSrc = page.video.src;
   const diag = api.videoHandler.diagnostics();
-  check('diagnostics.pageUrl 已经脱敏', diag.pageUrl.includes('[REDACTED]') && !diag.pageUrl.includes('super_secret_token_123'));
-  check('diagnostics.currentSrc 已经脱敏', diag.currentSrc.includes('[REDACTED]') && !diag.currentSrc.includes('sensitive_sign_456'));
+  check('diagnostics.pageUrl 已经脱敏', diag.pageUrl.includes('[REDACTED]') && !diag.pageUrl.includes('super_secret_token_123') && !diag.pageUrl.includes('sess_abc_456'));
+  check('diagnostics.currentSrc 已经脱敏', diag.currentSrc.includes('[REDACTED]') && !diag.currentSrc.includes('sensitive_sign_456') && !diag.currentSrc.includes('encrypted_key_789'));
 }
 
 // ————————————————————————————————————————————————————————————————
@@ -413,13 +541,13 @@ async function testEventLogRingBuffer() {
 }
 
 // ————————————————————————————————————————————————————————————————
-// 8. SPA 路由与单页跳转感知测试
+// 8. SPA 路由与单页跳转感知测试 (popstate / hashchange / URL 轮询)
 // ————————————————————————————————————————————————————————————————
 async function testSpaNavigation() {
-  console.log('\n[Suite 8] SPA 路由与单页跳转感知 (pushState / popstate / hashchange)');
+  console.log('\n[Suite 8] SPA 路由与单页跳转感知 (popstate / hashchange / URL 轮询)');
 
   const page = buildLessonPage({});
-  const { sandbox, timers, clock } = createSandbox({ page, storage: { autoNext: true } });
+  const { sandbox, timers, intervals, clock } = createSandbox({ page, storage: { autoNext: true } });
   const api = loadExtension(sandbox);
   await runTimers(timers);
 
@@ -430,52 +558,70 @@ async function testSpaNavigation() {
     return originalScan();
   };
 
-  // 8.1 模拟 pushState
-  if (sandbox.window.history && sandbox.window.history.pushState) {
-    const beforePush = scanCount;
-    clock.advance(600);
-    sandbox.location.href = 'https://study.test/chapter/new';
-    sandbox.window.history.pushState({}, '', '/chapter/new');
-    await runTimers(timers);
-    check('pushState 触发了重新扫描', scanCount > beforePush);
-  }
-
-  // 8.2 模拟 popstate
+  // 8.1 模拟 popstate 路由后退/前进感知（真实验证，绝无条件跳过）
   const beforePop = scanCount;
   clock.advance(600);
   sandbox.location.href = 'https://study.test/chapter/popstate-changed';
   sandbox.window.dispatchEvent(new FakeEvent('popstate'));
   await runTimers(timers);
-  check('popstate 触发了重新扫描', scanCount > beforePop);
+  check('popstate 事件触发了重新扫描', scanCount > beforePop);
 
-  // 8.3 模拟 hashchange
+  // 8.2 模拟 hashchange 锚点路由切换感知（真实验证，绝无条件跳过）
   const beforeHash = scanCount;
   clock.advance(600);
   sandbox.location.href = 'https://study.test/chapter/popstate-changed#hash-change';
   sandbox.window.dispatchEvent(new FakeEvent('hashchange'));
   await runTimers(timers);
-  check('hashchange 触发了重新扫描', scanCount > beforeHash);
+  check('hashchange 事件触发了重新扫描', scanCount > beforeHash);
+
+  // 8.3 模拟 URL 变更后由 urlCheckTimer 轮询兜底感知并触发扫描
+  const beforePolling = scanCount;
+  clock.advance(600);
+  sandbox.location.href = 'https://study.test/chapter/spa-route-polling-detected';
+  tickIntervals(intervals);
+  await runTimers(timers);
+  check('URL 改变后由 urlCheckTimer 轮询成功感知并重新扫描', scanCount > beforePolling);
 }
 
 // ————————————————————————————————————————————————————————————————
-// 9. Popup v1.2.0 交互与 MV3 CSP 零 innerHTML 合规检查
+// 9. 全仓库 CSP 与危险 API 深度合规检查 (background / popup / content)
 // ————————————————————————————————————————————————————————————————
 async function testPopupAndCspCompliance() {
-  console.log('\n[Suite 9] Popup v1.2.0 交互与 MV3 CSP 合规');
+  console.log('\n[Suite 9] 全仓库 CSP 与危险 API 深度合规检查 (background / popup / content)');
 
+  const dangerousPatterns = [
+    { name: 'eval', regex: /\beval\s*\(/ },
+    { name: 'new Function', regex: /new\s+Function\s*\(/ },
+    { name: 'innerHTML', regex: /\.innerHTML\s*=/ },
+    { name: 'outerHTML', regex: /\.outerHTML\s*=/ },
+    { name: 'insertAdjacentHTML', regex: /\.insertAdjacentHTML\s*\(/ },
+    { name: 'document.write', regex: /document\.write\s*\(/ }
+  ];
+
+  // 9.1 检查 background.js
+  const bgCode = fs.readFileSync(path.resolve(__dirname, '../background.js'), 'utf8');
+  for (const { name, regex } of dangerousPatterns) {
+    check(`background.js 绝无 ${name} 危险调用`, !regex.test(bgCode));
+  }
+
+  // 9.2 检查 popup.js
   const popupCode = fs.readFileSync(path.resolve(__dirname, '../popup.js'), 'utf8');
-  check('popup.js 中绝无 innerHTML 赋值调用', !/\.innerHTML\s*=/.test(popupCode));
-  check('popup.js 中绝无 outerHTML 赋值调用', !/\.outerHTML\s*=/.test(popupCode));
-  check('popup.js 中绝无 insertAdjacentHTML 调用', !/\.insertAdjacentHTML\s*\(/.test(popupCode));
-  check('popup.js 中绝无 eval 调用', !/\beval\s*\(/.test(popupCode));
-  check('popup.js 中绝无 new Function 调用', !/new\s+Function\s*\(/.test(popupCode));
+  for (const { name, regex } of dangerousPatterns) {
+    check(`popup.js 绝无 ${name} 危险调用`, !regex.test(popupCode));
+  }
 
+  // 9.3 检查 content/*.js 全部模块
   const contentFiles = fs.readdirSync(path.resolve(__dirname, '../content')).filter((f) => f.endsWith('.js'));
   for (const f of contentFiles) {
     const code = fs.readFileSync(path.resolve(__dirname, '../content', f), 'utf8');
-    check(`content/${f} 无 innerHTML / eval / Function`,
-      !/\.innerHTML\s*=/.test(code) && !/\beval\s*\(/.test(code) && !/new\s+Function\s*\(/.test(code));
+    const hasDanger = dangerousPatterns.some(({ regex }) => regex.test(code));
+    check(`content/${f} 严格遵守 CSP (0 eval / 0 Function / 0 HTML 注入)`, !hasDanger);
   }
+
+  // 9.4 检查 popup.html 无任何内联事件监听器 (如 onclick/onload/onerror)
+  const popupHtml = fs.readFileSync(path.resolve(__dirname, '../popup.html'), 'utf8');
+  const hasInlineHandler = /\son[a-z]+\s*=/i.test(popupHtml);
+  check('popup.html 无内联事件属性 (如 onclick=)', !hasInlineHandler);
 }
 
 // ————————————————————————————————————————————————————————————————
