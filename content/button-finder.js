@@ -149,7 +149,14 @@
     });
   }
 
-  /** 检查元素是否属于表单或提交按钮（严禁自动点击表单/测验提交） */
+  /**
+   * 检查元素是否属于表单或提交按钮（严禁自动点击表单/测验提交）
+   *
+   * 只认“元素自身的表单/提交语义”，**绝不沿祖先链做无条件 FORM 匹配**：
+   * 很多平台（ASP.NET WebForms 风格的 <form runat="server">）会用 form 包住整个 body，
+   * 一旦按祖先 form 排除，页面里所有按钮都会被否掉，导致插件完全失效。
+   * 测验/提交类误触由下面的显式判断 + 文本反向词共同兜住。
+   */
   function isFormOrSubmit(el) {
     if (!el || !el.tagName) return false;
     const tag = String(el.tagName).toUpperCase();
@@ -162,17 +169,9 @@
       const action = el.getAttribute('data-action');
       if (action && String(action).toLowerCase() === 'submit') return true;
     }
+    // el.form 只有表单关联元素（button/input/select/textarea 等）才有值，
+    // <a>/<div> 导航元素为 null，因此不会误伤“下一节”链接
     if (el.form) return true;
-    if (typeof el.closest === 'function') {
-      try {
-        if (el.closest('form')) return true;
-      } catch (_) {}
-    }
-    let node = el.parentElement;
-    while (node) {
-      if (node.tagName && String(node.tagName).toUpperCase() === 'FORM') return true;
-      node = node.parentElement;
-    }
     return false;
   }
 

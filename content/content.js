@@ -219,6 +219,11 @@
   // —— 启停 ——————————————————————————————————————————————————
 
   function onEnabled() {
+    // 幂等保护：重复调用不得叠加 MutationObserver / watchdog / URL 轮询定时器
+    if (started) {
+      AutoNext.debug('已在启用状态，忽略重复的启用请求');
+      return;
+    }
     started = true;
     AutoNext.log(`自动连播已启用（${frameLabel}）`);
     scan();
@@ -237,6 +242,10 @@
   }
 
   function onDisabled() {
+    if (!started && !urlCheckTimer) {
+      AutoNext.debug('已在停用状态，忽略重复的停用请求');
+      return;
+    }
     started = false;
     stopObserver();
     videoHandler.stopWatchdog();
@@ -244,6 +253,7 @@
     clearInterval(urlCheckTimer);
     urlCheckTimer = null;
     videoHandler.resetCycle();
+    AutoNext.log(`自动连播已停用（${frameLabel}）`);
   }
 
   /**

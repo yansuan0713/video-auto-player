@@ -84,22 +84,27 @@ let lastDiagResults = [];
 
 function sanitizeUrl(rawUrl) {
   if (!rawUrl || typeof rawUrl !== 'string') return '';
-  const SENSITIVE_KEYS = /^(token|ticket|auth|authorization|session|sessionid|jwt|access_token|accesstoken|secret|signature|sign|key|password|pwd|code|user_token|enc)$/i;
+  // 与 content/dom-utils.js 的 sanitizeUrl 保持一致的键集合
+  const SENSITIVE_KEYS = /^(token|ticket|auth|authorization|session|sessionid|jwt|access_token|accesstoken|secret|signature|sign|sig|at_|credential|x-amz-signature|x-amz-credential|x-amz-security-token|key|password|pwd|code|user_token|enc)$/i;
+  const SENSITIVE_PATTERN = /token|ticket|authorization|jwt|signature|secret|credentials|sessionid|password/i;
   try {
     const base = 'http://localhost';
     const parsed = new URL(rawUrl, base);
     const keys = Array.from(parsed.searchParams.keys());
     for (const key of keys) {
-      if (SENSITIVE_KEYS.test(key) || /token|ticket|auth|jwt|sign|secret|key|session|enc/i.test(key)) {
+      if (SENSITIVE_KEYS.test(key) || SENSITIVE_PATTERN.test(key)) {
         parsed.searchParams.set(key, '[REDACTED]');
       }
     }
-    if (parsed.hash && /token|ticket|auth|sign|key|secret|jwt|session|enc/i.test(parsed.hash)) {
+    if (parsed.hash && /token|ticket|auth|sign|key|secret|jwt|session|enc|at_|sig|credential/i.test(parsed.hash)) {
       parsed.hash = '#[REDACTED]';
     }
     return parsed.toString().replace(/%5BREDACTED%5D/gi, '[REDACTED]');
   } catch (_) {
-    return rawUrl.replace(/([?&](?:token|ticket|auth|jwt|sign|key|secret|session|enc)=)[^&#]*/gi, '$1[REDACTED]');
+    return rawUrl.replace(
+      /([?&](?:token|ticket|auth|jwt|sign|sig|at_|credential|x-amz-signature|x-amz-credential|x-amz-security-token|key|secret|session|enc)=)[^&#]*/gi,
+      '$1[REDACTED]'
+    );
   }
 }
 
@@ -409,19 +414,25 @@ function probeFrame() {
 
   const sanitizeUrl = (rawUrl) => {
     if (!rawUrl || typeof rawUrl !== 'string') return '';
+    // 键集合与 content/dom-utils.js 保持一致（此函数会被注入页面执行，需自包含）
+    const KEYS = /^(token|ticket|auth|authorization|session|sessionid|jwt|access_token|accesstoken|secret|signature|sign|sig|at_|credential|x-amz-signature|x-amz-credential|x-amz-security-token|key|password|pwd|code|user_token|enc)$/i;
+    const PATTERN = /token|ticket|authorization|jwt|signature|secret|credentials|sessionid|password/i;
     try {
       const parsed = new URL(rawUrl, location.href);
       for (const key of Array.from(parsed.searchParams.keys())) {
-        if (/^(token|ticket|auth|authorization|session|sessionid|jwt|access_token|accesstoken|secret|signature|sign|key|password|pwd|code|user_token|enc)$/i.test(key) || /token|ticket|auth|jwt|sign|secret|key|session|enc/i.test(key)) {
+        if (KEYS.test(key) || PATTERN.test(key)) {
           parsed.searchParams.set(key, '[REDACTED]');
         }
       }
-      if (parsed.hash && /token|ticket|auth|sign|key|secret|jwt|session|enc/i.test(parsed.hash)) {
+      if (parsed.hash && /token|ticket|auth|sign|key|secret|jwt|session|enc|at_|sig|credential/i.test(parsed.hash)) {
         parsed.hash = '#[REDACTED]';
       }
       return parsed.toString().replace(/%5BREDACTED%5D/gi, '[REDACTED]');
     } catch (_) {
-      return rawUrl.replace(/([?&](?:token|ticket|auth|jwt|sign|key|secret|session|enc)=)[^&#]*/gi, '$1[REDACTED]');
+      return rawUrl.replace(
+        /([?&](?:token|ticket|auth|jwt|sign|sig|at_|credential|x-amz-signature|x-amz-credential|x-amz-security-token|key|secret|session|enc)=)[^&#]*/gi,
+        '$1[REDACTED]'
+      );
     }
   };
 

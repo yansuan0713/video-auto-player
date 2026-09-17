@@ -419,6 +419,89 @@ async function testCustomSelectorAndSafetyFilters() {
     check('含有“提交/测验/交卷/答题/exam/quiz”的候选被严格排除', !clicked.includes('exam-btn') && !clicked.includes('submit-exam'));
     check('负面考试词过滤后回退至真实课程章节', clicked.includes('real-next'));
   }
+
+  // 4.x 回归：整页被 <form> 包裹（ASP.NET WebForms 风格）时，合法的“下一节”仍须可识别。
+  //     曾经的实现用 closest('form') 沿祖先链排除，会把这类页面的所有按钮一并否掉。
+  {
+    const doc = new FakeElement('html');
+    const body = doc.append(new FakeElement('body'));
+    // 关键：form 包住整个 body 内容
+    const formWrapper = body.append(new FakeElement('form', { id: 'aspnet-form', attrs: { runat: 'server' } }));
+    const video = formWrapper.append(new FakeVideoElement({ duration: 600 }));
+    const clicked = [];
+
+    const nav = formWrapper.append(new FakeElement('div', { class: 'prev_next' }));
+    const nextLink = nav.append(new FakeElement('a', {
+      id: 'prevNextFocusNext',
+      class: 'prev_next next',
+      text: '下一节'
+    }));
+    nextLink.addEventListener('click', () => clicked.push('wrapped-next'));
+
+    const { sandbox, timers } = createSandbox({
+      page: { documentElement: doc, body, video, state: { clicked } },
+      storage: { autoNext: true }
+    });
+    const api = loadExtension(sandbox);
+    await runTimers(timers);
+
+    check('整页 form 包裹时仍能识别到“下一节”候选', api.buttonFinder.findCandidates().length > 0,
+      String(api.buttonFinder.findCandidates().length));
+
+    video.watch(30);
+    video.finish();
+    await runTimers(timers);
+    check('整页 form 包裹时仍能点击“下一节”', clicked.includes('wrapped-next'), JSON.stringify(clicked));
+  }
+
+  // 4.y 安全底线不回退：form 内的提交控件与带提交语义的按钮仍须排除
+  {
+    const doc = new FakeElement('html');
+    const body = doc.append(new FakeElement('body'));
+    const video = body.append(new FakeVideoElement({ duration: 600 }));
+    const clicked = [];
+
+    const form = body.append(new FakeElement('form', { id: 'quiz-form' }));
+    const submitControl = form.append(new FakeElement('button', {
+      id: 'form-submit-control',
+      attrs: { type: 'submit' },
+      text: '下一节'
+    }));
+    submitControl.addEventListener('click', () => clicked.push('submit-control'));
+
+    const roleSubmit = body.append(new FakeElement('div', {
+      id: 'role-submit',
+      attrs: { role: 'submit' },
+      text: '下一节'
+    }));
+    roleSubmit.addEventListener('click', () => clicked.push('role-submit'));
+
+    const dataSubmit = body.append(new FakeElement('div', {
+      id: 'data-submit',
+      attrs: { 'data-action': 'submit' },
+      text: '下一节'
+    }));
+    dataSubmit.addEventListener('click', () => clicked.push('data-submit'));
+
+    const okNext = body.append(new FakeElement('button', { id: 'plain-next', class: 'btn-next', text: '下一节' }));
+    okNext.addEventListener('click', () => clicked.push('plain-next'));
+
+    const { sandbox, timers } = createSandbox({
+      page: { documentElement: doc, body, video, state: { clicked } },
+      storage: { autoNext: true }
+    });
+    loadExtension(sandbox);
+    await runTimers(timers);
+
+    video.watch(30);
+    video.finish();
+    await runTimers(timers);
+
+    check('type=submit 表单控件仍被排除', !clicked.includes('submit-control'));
+    check('role=submit 仍被排除', !clicked.includes('role-submit'));
+    check('data-action=submit 仍被排除', !clicked.includes('data-submit'));
+    check('同页普通“下一节”按钮仍可命中', clicked.includes('plain-next'), JSON.stringify(clicked));
+  }
 }
 
 // ————————————————————————————————————————————————————————————————
@@ -456,6 +539,37 @@ async function testUrlSanitization() {
   const diag = api.videoHandler.diagnostics();
   check('diagnostics.pageUrl 已经脱敏', diag.pageUrl.includes('[REDACTED]') && !diag.pageUrl.includes('super_secret_token_123') && !diag.pageUrl.includes('sess_abc_456'));
   check('diagnostics.currentSrc 已经脱敏', diag.currentSrc.includes('[REDACTED]') && !diag.currentSrc.includes('sensitive_sign_456') && !diag.currentSrc.includes('encrypted_key_789'));
+
+  // 5.1 回归：CDN 签名 at_ / 简写 sig / 云厂商 credential 必须脱敏
+  const cdnUrl = 'https://s2.cldisk.com/w7/video/sd.mp4?at_=1789537022&sig=abc123sig&X-Amz-Credential=AKIAEXAMPLE&chapterId=42';
+  const cleanCdn = dom.sanitizeUrl(cdnUrl);
+  check('at_ (CDN 签名) 被替换为 [REDACTED]', cleanCdn.includes('at_=[REDACTED]'));
+  check('sig (签名简写) 被替换为 [REDACTED]', cleanCdn.includes('sig=[REDACTED]'));
+  check('X-Amz-Credential 被替换为 [REDACTED]', cleanCdn.includes('Credential=[REDACTED]'));
+  check('at_/sig/credential 明文均无泄漏', !/1789537022|abc123sig|AKIAEXAMPLE/.test(cleanCdn));
+  check('同一 URL 中的业务参数 chapterId 保持原样', cleanCdn.includes('chapterId=42'));
+
+  // 5.2 回归：hash 中的 at_ / sig / credential 也要脱敏
+  const hashUrl = 'https://a.test/x?chapterId=7#at_=9999&sig=hashsig&credential=hashcred';
+  const cleanHash = dom.sanitizeUrl(hashUrl);
+  check('hash 含 at_/sig/credential 时整体替换为 #[REDACTED]', cleanHash.includes('#[REDACTED]'));
+  check('hash 中签名明文无泄漏', !/9999|hashsig|hashcred/.test(cleanHash));
+
+  // 5.3 反向保护：精确键匹配不得误伤只"看起来像"的普通参数
+  //     注意 format_ 含 at_ 子串，按子串规则会脱敏属预期行为，因此不纳入本断言
+  const safeUrl = 'https://a.test/x?design=modern&signal=weak&chapterId=8&courseTitle=math';
+  const cleanSafe = dom.sanitizeUrl(safeUrl);
+  check('design/signal 等含 sign 子串的正常参数不被误伤',
+    cleanSafe.includes('design=modern') && cleanSafe.includes('signal=weak'),
+    cleanSafe);
+  check('普通业务参数 chapterId/courseTitle 保持原样',
+    cleanSafe.includes('chapterId=8') && cleanSafe.includes('courseTitle=math'),
+    cleanSafe);
+
+  // 5.4 popup 侧的内联 sanitizeUrl 必须与 content 侧键集合一致
+  const popupCode = fs.readFileSync(path.resolve(__dirname, '../popup.js'), 'utf8');
+  check('popup.js 内联 sanitizeUrl 已同步 at_/sig/credential',
+    popupCode.includes('at_') && popupCode.includes('credential') && /\bsig\b/.test(popupCode));
 }
 
 // ————————————————————————————————————————————————————————————————
@@ -625,6 +739,89 @@ async function testPopupAndCspCompliance() {
 }
 
 // ————————————————————————————————————————————————————————————————
+// 10. 启停生命周期：重复启用不得叠加定时器
+// ————————————————————————————————————————————————————————————————
+
+/** 统计某个 frame 中"仍在运行"的 interval（cancelled 为 false 的） */
+function activeIntervals(box) {
+  return box.intervals.filter((it) => !it.cancelled);
+}
+
+async function testEnableDisableLifecycle() {
+  console.log('\n[Suite 10] 启停生命周期与重复定时器保护');
+
+  // 10.1 enable → enable：不得叠加 URL 轮询定时器
+  {
+    const page = buildLessonPage({});
+    const box = createSandbox({ page, storage: { autoNext: true } });
+    loadExtension(box.sandbox);
+    await runTimers(box.timers);
+
+    const baseline = activeIntervals(box).length;
+    const pollBefore = activeIntervals(box).filter((it) => it.ms === 5000).length;
+
+    // 模拟重复的启用通知（storage 变更会被多次广播）
+    box.storageListeners.forEach((fn) => fn({ autoNext: { newValue: true } }, 'local'));
+    box.storageListeners.forEach((fn) => fn({ autoNext: { newValue: true } }, 'local'));
+
+    const after = activeIntervals(box).length;
+    const pollAfter = activeIntervals(box).filter((it) => it.ms === 5000).length;
+
+    check('重复 enable 不叠加任何 interval', after === baseline, `${baseline} → ${after}`);
+    check('重复 enable 不叠加 URL 轮询定时器', pollAfter === pollBefore, `${pollBefore} → ${pollAfter}`);
+  }
+
+  // 10.2 enable → disable → enable：每次只保留一个轮询定时器，且能重新工作
+  {
+    const page = buildLessonPage({});
+    const box = createSandbox({ page, storage: { autoNext: true } });
+    loadExtension(box.sandbox);
+    await runTimers(box.timers);
+
+    const firstPoll = activeIntervals(box).filter((it) => it.ms === 5000);
+    check('启用后存在 1 个 URL 轮询定时器', firstPoll.length === 1, String(firstPoll.length));
+
+    // 关闭
+    box.storageListeners.forEach((fn) => fn({ autoNext: { newValue: false } }, 'local'));
+    const pollAfterDisable = activeIntervals(box).filter((it) => it.ms === 5000);
+    check('关闭后 URL 轮询定时器被清理', pollAfterDisable.length === 0, String(pollAfterDisable.length));
+    check('关闭后 watchdog 也被清理',
+      activeIntervals(box).filter((it) => it.ms === 800).length === 0);
+
+    // 再次启用
+    box.storageListeners.forEach((fn) => fn({ autoNext: { newValue: true } }, 'local'));
+    const pollAfterReenable = activeIntervals(box).filter((it) => it.ms === 5000);
+    check('重新启用后恰好恢复 1 个 URL 轮询定时器', pollAfterReenable.length === 1, String(pollAfterReenable.length));
+  }
+
+  // 10.3 重新启用后功能真的可用（能再次感知 URL 变化并触发重新扫描）
+  {
+    const page = buildLessonPage({});
+    const box = createSandbox({ page, storage: { autoNext: true } });
+    const api = loadExtension(box.sandbox);
+    await runTimers(box.timers);
+
+    let scanCount = 0;
+    const originalScan = api.videoHandler.scan.bind(api.videoHandler);
+    api.videoHandler.scan = () => { scanCount += 1; return originalScan(); };
+
+    // 关闭 → 重新启用
+    box.storageListeners.forEach((fn) => fn({ autoNext: { newValue: false } }, 'local'));
+    box.storageListeners.forEach((fn) => fn({ autoNext: { newValue: true } }, 'local'));
+    await runTimers(box.timers);
+
+    const before = scanCount;
+    box.sandbox.location.href = 'https://study.test/chapter/after-reenable';
+    box.clock.advance(6000);
+    // 只触发 URL 轮询定时器
+    activeIntervals(box).filter((it) => it.ms === 5000).forEach((it) => it.fn());
+    await runTimers(box.timers);
+
+    check('重新启用后 URL 轮询仍能触发重新扫描', scanCount > before, `${before} → ${scanCount}`);
+  }
+}
+
+// ————————————————————————————————————————————————————————————————
 // 主执行器
 // ————————————————————————————————————————————————————————————————
 (async () => {
@@ -640,6 +837,7 @@ async function testPopupAndCspCompliance() {
   await testEventLogRingBuffer();
   await testSpaNavigation();
   await testPopupAndCspCompliance();
+  await testEnableDisableLifecycle();
 
   const failed = results.filter((r) => !r.ok);
   console.log('\n' + '='.repeat(60));

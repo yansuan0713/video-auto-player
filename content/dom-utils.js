@@ -149,22 +149,29 @@
      */
     sanitizeUrl(rawUrl) {
       if (!rawUrl || typeof rawUrl !== 'string') return '';
-      const SENSITIVE_KEYS = /^(token|ticket|auth|authorization|session|sessionid|jwt|access_token|accesstoken|secret|signature|sign|key|password|pwd|code|user_token|enc)$/i;
+      // 精确键：短键或易与业务参数撞车的键（sig/at_/credential 等）必须整体匹配，
+      // 否则 design(含 sign)、signal(含 sig) 这类正常参数会被误脱敏。
+      const SENSITIVE_KEYS = /^(token|ticket|auth|authorization|session|sessionid|jwt|access_token|accesstoken|secret|signature|sign|sig|at_|credential|x-amz-signature|x-amz-credential|x-amz-security-token|key|password|pwd|code|user_token|enc)$/i;
+      // 子串键：只保留够长、语义明确、几乎不会作为普通词出现的片段
+      const SENSITIVE_PATTERN = /token|ticket|authorization|jwt|signature|secret|credentials|sessionid|password/i;
       try {
         const base = typeof window !== 'undefined' && window.location ? window.location.href : 'http://localhost';
         const parsed = new URL(rawUrl, base);
         const keys = Array.from(parsed.searchParams.keys());
         for (const key of keys) {
-          if (SENSITIVE_KEYS.test(key) || /token|ticket|auth|jwt|sign|secret|key|session|enc/i.test(key)) {
+          if (SENSITIVE_KEYS.test(key) || SENSITIVE_PATTERN.test(key)) {
             parsed.searchParams.set(key, '[REDACTED]');
           }
         }
-        if (parsed.hash && /token|ticket|auth|sign|key|secret|jwt|session|enc/i.test(parsed.hash)) {
+        if (parsed.hash && /token|ticket|auth|sign|key|secret|jwt|session|enc|at_|sig|credential/i.test(parsed.hash)) {
           parsed.hash = '#[REDACTED]';
         }
         return parsed.toString().replace(/%5BREDACTED%5D/gi, '[REDACTED]');
       } catch (_) {
-        return rawUrl.replace(/([?&](?:token|ticket|auth|jwt|sign|key|secret|session|enc)=)[^&#]*/gi, '$1[REDACTED]');
+        return rawUrl.replace(
+          /([?&](?:token|ticket|auth|jwt|sign|sig|at_|credential|x-amz-signature|x-amz-credential|x-amz-security-token|key|secret|session|enc)=)[^&#]*/gi,
+          '$1[REDACTED]'
+        );
       }
     },
 
