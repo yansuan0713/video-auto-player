@@ -6,34 +6,85 @@
 <style>
   :root {
     --brand: #2563eb;
+    --brand-hover: #1d4ed8;
     --bg: #ffffff;
     --fg: #0f172a;
     --muted: #64748b;
     --line: #e2e8f0;
+    --card-bg: #f8fafc;
     --ok: #16a34a;
+    --warn: #d97706;
     --off: #94a3b8;
   }
   * { box-sizing: border-box; }
   body {
-    width: 340px;
+    width: 360px;
     margin: 0;
     padding: 12px;
     background: var(--bg);
     color: var(--fg);
     font: 13px/1.6 system-ui, -apple-system, "Microsoft YaHei", sans-serif;
   }
-  .head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-  .head h1 { flex: 1; margin: 0; font-size: 14px; font-weight: 600; }
+  .head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .head h1 { flex: 1; margin: 0; font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .badge-ver { font-size: 10px; font-weight: 500; background: #e0f2fe; color: #0369a1; padding: 1px 6px; border-radius: 999px; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--off); transition: background .2s; }
   .dot.on { background: var(--ok); box-shadow: 0 0 0 3px rgba(22, 163, 74, .18); }
-  .state { font-size: 12px; color: var(--muted); }
+  .state { font-size: 11.5px; color: var(--muted); }
   .state.on { color: var(--ok); font-weight: 600; }
+
+  /* 选项卡 */
+  .tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 10px;
+    padding: 2px;
+    background: #f1f5f9;
+    border-radius: 8px;
+  }
+  .tab-btn {
+    flex: 1;
+    padding: 5px 0;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all .15s ease;
+  }
+  .tab-btn:hover { color: var(--fg); }
+  .tab-btn.active {
+    background: #fff;
+    color: var(--brand);
+    font-weight: 600;
+    box-shadow: 0 1px 2px rgba(0,0,0,.06);
+  }
+
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* 概要卡片 */
+  .overview {
+    padding: 8px 10px;
+    margin-bottom: 8px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #eff6ff;
+    font-size: 11.5px;
+    line-height: 1.5;
+  }
+  .overview-item { display: flex; justify-content: space-between; align-items: center; }
+  .overview-item + .overview-item { margin-top: 4px; padding-top: 4px; border-top: 1px dashed #dbeafe; }
+  .overview-label { color: var(--muted); font-size: 11px; }
+  .overview-val { font-weight: 600; color: #1e3a8a; }
 
   .card {
     padding: 10px 12px;
     border: 1px solid var(--line);
     border-radius: 10px;
-    background: #f8fafc;
+    background: var(--card-bg);
   }
   .row { display: flex; align-items: center; gap: 10px; }
   .row + .row { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
@@ -42,14 +93,14 @@
   .label small { display: block; color: var(--muted); font-size: 11px; line-height: 1.4; }
 
   /* 开关 */
-  .switch { position: relative; flex: none; width: 42px; height: 24px; }
+  .switch { position: relative; flex: none; width: 40px; height: 22px; }
   .switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
   .track {
     position: absolute; inset: 0; border-radius: 999px;
     background: #cbd5e1; transition: background .2s; pointer-events: none;
   }
   .track::after {
-    content: ""; position: absolute; top: 3px; left: 3px;
+    content: ""; position: absolute; top: 2px; left: 2px;
     width: 18px; height: 18px; border-radius: 50%; background: #fff;
     box-shadow: 0 1px 3px rgba(0, 0, 0, .25); transition: transform .2s;
   }
@@ -57,6 +108,63 @@
   .switch input:checked + .track::after { transform: translateX(18px); }
   .switch input:focus-visible + .track { outline: 2px solid var(--brand); outline-offset: 2px; }
 
+  /* 速率 Chips 与输入 */
+  .rate-group {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--line);
+  }
+  .rate-title {
+    font-size: 11px;
+    color: var(--muted);
+    margin-bottom: 6px;
+    display: flex;
+    justify-content: space-between;
+  }
+  .rate-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 6px;
+  }
+  .chip {
+    padding: 3px 7px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #fff;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all .15s ease;
+  }
+  .chip:hover { border-color: var(--brand); color: var(--brand); }
+  .chip.active { background: var(--brand); color: #fff; border-color: var(--brand); font-weight: 600; }
+  .rate-custom {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .input-text {
+    flex: 1;
+    padding: 5px 8px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #fff;
+    font-size: 12px;
+    color: var(--fg);
+  }
+  .input-text:focus { outline: 2px solid var(--brand); outline-offset: 1px; }
+  .btn-sm {
+    padding: 5px 10px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #fff;
+    color: var(--fg);
+    font-size: 11.5px;
+    cursor: pointer;
+  }
+  .btn-sm:hover { border-color: var(--brand); color: var(--brand); }
+
+  /* 动作按钮 */
   .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
   button.ghost {
     width: 100%; padding: 7px 8px;
@@ -66,19 +174,58 @@
   }
   button.ghost:hover { border-color: var(--brand); color: var(--brand); }
   button.ghost.busy { opacity: .65; pointer-events: none; }
+  button.primary {
+    background: var(--brand);
+    color: #fff;
+    border-color: var(--brand);
+  }
+  button.primary:hover { background: var(--brand-hover); }
+
+  /* 表单行 */
+  .form-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .form-label { font-size: 12px; color: var(--fg); }
+  .select-sm {
+    padding: 4px 6px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #fff;
+    font-size: 12px;
+    color: var(--fg);
+  }
 
   .hint { margin: 10px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
-  .hint kbd {
-    padding: 0 4px; border: 1px solid var(--line); border-bottom-width: 2px;
-    border-radius: 4px; background: #fff; font: inherit; font-size: 10px;
-  }
   .pill {
     display: inline-block; margin-top: 8px; padding: 2px 8px;
     border-radius: 999px; background: #eff6ff; color: var(--brand); font-size: 10px;
   }
 
-  /* —— 诊断面板：不用 F12 也能看到结果 —— */
+  /* —— 诊断面板 —— */
   .diag { margin-top: 10px; }
+  .diag-toolbar { display: flex; gap: 6px; margin-bottom: 8px; }
+  .diag-toolbar button { flex: 1; padding: 5px 6px; font-size: 11px; }
+
+  .events-box {
+    margin-bottom: 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #fff;
+    max-height: 120px;
+    overflow-y: auto;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 10px;
+  }
+  .event-line { display: flex; gap: 6px; padding: 2px 0; border-bottom: 1px dotted #f1f5f9; }
+  .event-time { color: var(--muted); flex: none; }
+  .event-type { font-weight: 600; color: var(--brand); flex: none; }
+  .event-detail { color: var(--fg); word-break: break-all; }
+
   .diag .sec {
     margin-top: 8px; padding: 8px 10px;
     border: 1px solid var(--line); border-radius: 8px; background: #f8fafc;
@@ -114,65 +261,196 @@
 <body>
   <div class="head">
     <span class="dot" id="dot"></span>
-    <h1>视频自动播放器</h1>
+    <h1>视频自动播放器 <span class="badge-ver">v1.2.0</span></h1>
     <span class="state" id="state">读取中…</span>
   </div>
 
-  <div class="card">
-    <div class="row">
-      <span class="label">
-        <b>自动进入下一节</b>
-        <small>视频自然播放结束后，自动点击页面上的“下一节 / 下一个任务点”</small>
-      </span>
-      <label class="switch">
-        <input type="checkbox" id="autoNext" role="switch" aria-label="自动进入下一节">
-        <span class="track"></span>
-      </label>
+  <!-- 顶部区域 Tab 导航 -->
+  <div class="tabs">
+    <button class="tab-btn active" id="tabBtnPlay">播放控制</button>
+    <button class="tab-btn" id="tabBtnSite">当前站点</button>
+    <button class="tab-btn" id="tabBtnDiag">诊断日志</button>
+  </div>
+
+  <!-- Tab 1: 播放控制 -->
+  <div class="tab-panel active" id="tabPlay">
+    <!-- 一眼掌握状态 -->
+    <div class="overview">
+      <div class="overview-item">
+        <span class="overview-label">视频状态</span>
+        <span class="overview-val" id="ovVideo">未检测到</span>
+      </div>
+      <div class="overview-item">
+        <span class="overview-label">当前倍速</span>
+        <span class="overview-val" id="ovRate">1.0x</span>
+      </div>
+      <div class="overview-item">
+        <span class="overview-label">当前站点规则</span>
+        <span class="overview-val" id="ovSite">全局默认</span>
+      </div>
     </div>
-    <div class="row">
-      <span class="label">
-        <b>自动二倍速</b>
-        <small>允许倍速时设为 2.0；页面不接受时，当前视频自动回退到 1.0</small>
-      </span>
-      <label class="switch">
-        <input type="checkbox" id="autoRate2x" role="switch" aria-label="自动二倍速">
-        <span class="track"></span>
-      </label>
-    </div>
-    <div class="row">
-      <span class="label">
-        <b>自动跳过非视频页面</b>
-        <small>下一节不是视频时继续往下点。⚠️ 可能跳过测验/作业，默认关闭</small>
-      </span>
-      <label class="switch">
-        <input type="checkbox" id="autoSkipNonVideo" role="switch" aria-label="自动跳过非视频页面">
-        <span class="track"></span>
-      </label>
-    </div>
-    <div class="row">
-      <span class="label">
-        <b>详细调试日志</b>
-        <small>在页面控制台输出扫描与按钮候选详情（排查用）</small>
-      </span>
-      <label class="switch">
-        <input type="checkbox" id="verbose" role="switch" aria-label="详细调试日志">
-        <span class="track"></span>
-      </label>
-    </div>
-    <div class="actions">
-      <button class="ghost" id="printStats">检测当前标签页</button>
-      <button class="ghost" id="clickNext">手动点“下一节”</button>
+
+    <div class="card">
+      <div class="row">
+        <span class="label">
+          <b>自动进入下一节</b>
+          <small>视频自然播放结束后，自动寻找并点击“下一节”控件</small>
+        </span>
+        <label class="switch">
+          <input type="checkbox" id="autoNext" role="switch" aria-label="自动进入下一节">
+          <span class="track"></span>
+        </label>
+      </div>
+
+      <div class="row">
+        <span class="label">
+          <b>自动倍速播放</b>
+          <small>将播放器设为设定速度；被平台限制时自动回退并保持播放</small>
+        </span>
+        <label class="switch">
+          <input type="checkbox" id="autoRate2x" role="switch" aria-label="自动二倍速">
+          <span class="track"></span>
+        </label>
+      </div>
+
+      <!-- 播放速率选择区 -->
+      <div class="rate-group" id="rateControls">
+        <div class="rate-title">
+          <span>选择倍速</span>
+          <span id="currentRateBadge">2.0x</span>
+        </div>
+        <div class="rate-chips" id="rateChips">
+          <button class="chip" data-rate="1.0">1.0x</button>
+          <button class="chip" data-rate="1.25">1.25x</button>
+          <button class="chip" data-rate="1.5">1.5x</button>
+          <button class="chip" data-rate="1.75">1.75x</button>
+          <button class="chip active" data-rate="2.0">2.0x</button>
+          <button class="chip" data-rate="2.5">2.5x</button>
+          <button class="chip" data-rate="3.0">3.0x</button>
+        </div>
+        <div class="rate-custom">
+          <input type="number" id="customRateInput" class="input-text" min="0.1" max="16.0" step="0.05" placeholder="自定义倍速 (0.5~16)">
+          <button id="applyCustomRate" class="btn-sm">设定</button>
+        </div>
+      </div>
+
+      <div class="row">
+        <span class="label">
+          <b>自动跳过非视频页面</b>
+          <small>下一节不是视频时继续往下点。⚠️ 可能跳过测验/作业，默认关闭</small>
+        </span>
+        <label class="switch">
+          <input type="checkbox" id="autoSkipNonVideo" role="switch" aria-label="自动跳过非视频页面">
+          <span class="track"></span>
+        </label>
+      </div>
+
+      <div class="row">
+        <span class="label">
+          <b>详细调试日志</b>
+          <small>在页面控制台输出扫描与按钮候选详情（排查用）</small>
+        </span>
+        <label class="switch">
+          <input type="checkbox" id="verbose" role="switch" aria-label="详细调试日志">
+          <span class="track"></span>
+        </label>
+      </div>
+
+      <div class="actions">
+        <button class="ghost" id="printStats">检测当前标签页</button>
+        <button class="ghost" id="clickNext">手动点“下一节”</button>
+      </div>
     </div>
   </div>
 
-  <div id="diag" class="diag" hidden></div>
+  <!-- Tab 2: 当前站点 -->
+  <div class="tab-panel" id="tabSite">
+    <div class="card">
+      <div class="row">
+        <span class="label">
+          <b>站点域名</b>
+          <small id="siteDomainText">正在获取...</small>
+        </span>
+        <label class="switch">
+          <input type="checkbox" id="siteOverrideToggle" role="switch" aria-label="为当前站点单独设置">
+          <span class="track"></span>
+        </label>
+      </div>
+
+      <div id="siteConfigArea">
+        <div class="form-row">
+          <span class="form-label">站点连播</span>
+          <select id="siteAutoNextSelect" class="select-sm">
+            <option value="inherit">继承全局</option>
+            <option value="true">开启连播</option>
+            <option value="false">关闭连播</option>
+          </select>
+        </div>
+
+        <div class="form-row">
+          <span class="form-label">站点倍速</span>
+          <select id="siteAutoRateSelect" class="select-sm">
+            <option value="inherit">继承全局</option>
+            <option value="true">开启倍速</option>
+            <option value="false">关闭倍速</option>
+          </select>
+        </div>
+
+        <div class="form-row">
+          <span class="form-label">指定速率</span>
+          <input type="number" id="siteRateInput" class="input-text" style="width: 100px;" min="0.1" max="16" step="0.05" placeholder="继承全局">
+        </div>
+
+        <div class="form-row">
+          <span class="form-label">跳非视频</span>
+          <select id="siteAutoSkipSelect" class="select-sm">
+            <option value="inherit">继承全局</option>
+            <option value="true">开启跳过</option>
+            <option value="false">关闭跳过</option>
+          </select>
+        </div>
+
+        <div style="margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line);">
+          <span class="label">
+            <b>自定义“下一节”CSS Selector</b>
+            <small>优先尝试此规则，找不到再回退自动识别。反向词仍会被安全排除。</small>
+          </span>
+          <div style="margin-top: 6px;">
+            <input type="text" id="customSelectorInput" class="input-text" style="width: 100%;" placeholder="例如 #nextBtn, .next-chapter">
+          </div>
+        </div>
+
+        <div class="actions" style="margin-top: 10px;">
+          <button class="ghost primary" id="saveSiteBtn">保存站点规则</button>
+          <button class="ghost" id="clearSiteBtn">恢复全局默认</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tab 3: 诊断日志 -->
+  <div class="tab-panel" id="tabDiag">
+    <div class="diag-toolbar">
+      <button class="ghost" id="exportJsonBtn">导出 JSON (脱敏)</button>
+      <button class="ghost" id="copyTextBtn">复制诊断文本</button>
+    </div>
+
+    <!-- 最近事件记录 -->
+    <div class="sec" style="margin-bottom: 8px;">
+      <h2>最近事件记录 (Event Log)</h2>
+      <div class="events-box" id="recentEventsBox">
+        <div class="empty">暂无事件记录</div>
+      </div>
+    </div>
+
+    <!-- 诊断结果面板（纯 DOM 挂载，无 innerHTML） -->
+    <div id="diag" class="diag"></div>
+  </div>
 
   <p class="hint">
-    两个功能互相独立，可单独开启。都只作用于浏览器播放器本身：不改播放进度、不改视频时长、
-    不伪造时长、不发送虚假完成请求、不调用站点后端接口、不绕过验证码或检测机制。<br>
-    修改开关后请刷新一次已打开的课程页面。
+    合规声明：仅调用浏览器公开视频控件，不修改进度或伪造时长，不发送虚假完成请求，不绕过网站验证码或可见性限制。
   </p>
-  <span class="pill">Manifest V3 · 支持 iframe</span>
+  <span class="pill">Manifest V3 · 支持 iframe · v1.2.0</span>
 
   <script src="popup.js"></script>
 </body>
