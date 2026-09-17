@@ -61,7 +61,10 @@
   ];
 
   /** 反向词：命中则重罚，避免把“上一节 / 返回目录 / 下一章练习”当成导航 */
-  const NEGATIVE = ['上一节', '上一章', '上一个', '上一页', '返回', 'back', 'prev', 'previous', 'replay', '重播', '重看'];
+  const NEGATIVE = [
+    '上一节', '上一章', '上一个', '上一页', '返回', 'back', 'prev', 'previous', 'replay', '重播', '重看',
+    '提交', '交卷', '答题', '测验', '考试', 'submit', 'quiz', 'exam'
+  ];
 
   const TEXT_LIMIT = 60; // 文本太长基本是容器，不是按钮
 
@@ -146,10 +149,37 @@
     });
   }
 
+  /** 检查元素是否属于表单或提交按钮（严禁自动点击表单/测验提交） */
+  function isFormOrSubmit(el) {
+    if (!el || !el.tagName) return false;
+    const tag = String(el.tagName).toUpperCase();
+    if (tag === 'FORM') return true;
+    const type = el.type || (typeof el.getAttribute === 'function' && el.getAttribute('type'));
+    if (type && String(type).toLowerCase() === 'submit') return true;
+    if (typeof el.getAttribute === 'function') {
+      const role = el.getAttribute('role');
+      if (role && String(role).toLowerCase() === 'submit') return true;
+      const action = el.getAttribute('data-action');
+      if (action && String(action).toLowerCase() === 'submit') return true;
+    }
+    if (el.form) return true;
+    if (typeof el.closest === 'function') {
+      try {
+        if (el.closest('form')) return true;
+      } catch (_) {}
+    }
+    let node = el.parentElement;
+    while (node) {
+      if (node.tagName && String(node.tagName).toUpperCase() === 'FORM') return true;
+      node = node.parentElement;
+    }
+    return false;
+  }
+
   /**
    * 扫描当前 document，返回按可信度降序排列的候选按钮。
    * 支持用户为特定站点配置的自定义 CSS 选择器：自定义规则优先（分值 1000），
-   * 但必须继续经受反向词（“上一节/返回/重播”）、禁用态和可见性的严格安全检验。
+   * 但必须继续经受反向词（“上一节/返回/重播/提交/测验”）、表单排除、禁用态和可见性的严格安全检验。
    * @param {string} [customSelector] 可选的自定义选择器（缺省自动取 settings 中的站点规则）
    * @returns {Array<{el: HTMLElement, score: number, reason: string, text: string}>}
    */
@@ -160,6 +190,9 @@
     const consider = (rawEl, extraScore, reason) => {
       if (!rawEl || !rawEl.tagName || rawEl === document.body || rawEl === document.documentElement) return;
       const el = closestClickable(rawEl) || rawEl;
+
+      // 严防误触：表单或提交按钮一律排除，绝不自动提交作业/测验
+      if (isFormOrSubmit(rawEl) || isFormOrSubmit(el)) return;
 
       // 负面词只看元素自身文字：父容器里的“上一节”按钮不该把“下一节”一起否掉
       const ownText = dom.ownTextOf(el);
@@ -207,8 +240,15 @@
       for (const rawEl of customMatches) {
         if (!rawEl || !rawEl.tagName || rawEl === document.body || rawEl === document.documentElement) continue;
         const el = closestClickable(rawEl) || rawEl;
+
+        // 安全底线：即使用户配置的选择器命中了表单提交控件，也坚决排除
+        if (isFormOrSubmit(rawEl) || isFormOrSubmit(el)) {
+          AutoNext.debug('自定义选择器命中表单提交元素，已安全排除');
+          continue;
+        }
+
         const ownText = dom.ownTextOf(el);
-        // 安全底线：即使用户填的选择器命中了“上一节/返回/重播”，也坚决排除，绝不反向跳转
+        // 安全底线：即使用户填的选择器命中了“上一节/返回/重播/提交/测验”，也坚决排除，绝不反向跳转
         if (hasNegative(dom.normalize(ownText))) {
           AutoNext.debug(`自定义选择器命中元素含有反向词，已安全排除：${ownText}`);
           continue;

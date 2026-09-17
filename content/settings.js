@@ -75,7 +75,28 @@
       }
     }
     const sites = globalValues.siteSettings || {};
-    const siteRule = (host && sites[host]) || null;
+    let siteRule = (host && sites[host]) || null;
+
+    // 若当前 frame 自身没有显式覆盖规则，且当前处于 iframe 中，尝试探测顶层窗口或父级页面规则以安全继承
+    if ((!siteRule || (!siteRule.override && !siteRule.enabled)) && typeof window !== 'undefined') {
+      let topHost = '';
+      try {
+        if (window.top && window.top !== window && window.top.location && window.top.location.hostname) {
+          topHost = window.top.location.hostname;
+        }
+      } catch (_) {
+        // 跨域 iframe 下访问 window.top.location 会抛出 SecurityError，尝试从 document.referrer 提取顶层/父级域名
+        try {
+          if (typeof document !== 'undefined' && document.referrer) {
+            topHost = new URL(document.referrer).hostname;
+          }
+        } catch (_) {}
+      }
+      if (topHost && sites[topHost] && (sites[topHost].override === true || sites[topHost].enabled === true)) {
+        siteRule = sites[topHost];
+      }
+    }
+
     const hasSiteOverride = !!(siteRule && (siteRule.override === true || siteRule.enabled === true));
 
     const autoNext = (hasSiteOverride && typeof siteRule.autoNext === 'boolean')

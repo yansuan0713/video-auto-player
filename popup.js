@@ -84,22 +84,22 @@ let lastDiagResults = [];
 
 function sanitizeUrl(rawUrl) {
   if (!rawUrl || typeof rawUrl !== 'string') return '';
-  const SENSITIVE_KEYS = /^(token|ticket|auth|authorization|session|jwt|access_token|accesstoken|secret|signature|sign|key|password|pwd|code|sessionid|user_token)$/i;
+  const SENSITIVE_KEYS = /^(token|ticket|auth|authorization|session|sessionid|jwt|access_token|accesstoken|secret|signature|sign|key|password|pwd|code|user_token|enc)$/i;
   try {
     const base = 'http://localhost';
     const parsed = new URL(rawUrl, base);
     const keys = Array.from(parsed.searchParams.keys());
     for (const key of keys) {
-      if (SENSITIVE_KEYS.test(key) || /token|auth|sign|secret|key/i.test(key)) {
+      if (SENSITIVE_KEYS.test(key) || /token|ticket|auth|jwt|sign|secret|key|session|enc/i.test(key)) {
         parsed.searchParams.set(key, '[REDACTED]');
       }
     }
-    if (parsed.hash && /token|auth|sign|key|secret/i.test(parsed.hash)) {
+    if (parsed.hash && /token|ticket|auth|sign|key|secret|jwt|session|enc/i.test(parsed.hash)) {
       parsed.hash = '#[REDACTED]';
     }
-    return parsed.toString();
+    return parsed.toString().replace(/%5BREDACTED%5D/gi, '[REDACTED]');
   } catch (_) {
-    return rawUrl.replace(/([?&](?:token|ticket|auth|jwt|sign|key|secret)=)[^&#]*/gi, '$1[REDACTED]');
+    return rawUrl.replace(/([?&](?:token|ticket|auth|jwt|sign|key|secret|session|enc)=)[^&#]*/gi, '$1[REDACTED]');
   }
 }
 
@@ -276,7 +276,7 @@ async function detectCurrentTab() {
       currentTabHost = '';
     }
     if (ui.siteDomainText) {
-      ui.siteDomainText.textContent = currentTabHost || '无法识别当前域名';
+      ui.siteDomainText.textContent = currentTabHost ? `${currentTabHost} (顶层标签页)` : '无法识别当前域名';
     }
     renderSiteForm();
     render();
@@ -412,16 +412,16 @@ function probeFrame() {
     try {
       const parsed = new URL(rawUrl, location.href);
       for (const key of Array.from(parsed.searchParams.keys())) {
-        if (/^(token|ticket|auth|authorization|session|jwt|access_token|accesstoken|secret|signature|sign|key|password|pwd|code|sessionid|user_token)$/i.test(key) || /token|auth|sign|secret|key/i.test(key)) {
+        if (/^(token|ticket|auth|authorization|session|sessionid|jwt|access_token|accesstoken|secret|signature|sign|key|password|pwd|code|user_token|enc)$/i.test(key) || /token|ticket|auth|jwt|sign|secret|key|session|enc/i.test(key)) {
           parsed.searchParams.set(key, '[REDACTED]');
         }
       }
-      if (parsed.hash && /token|auth|sign|key|secret/i.test(parsed.hash)) {
+      if (parsed.hash && /token|ticket|auth|sign|key|secret|jwt|session|enc/i.test(parsed.hash)) {
         parsed.hash = '#[REDACTED]';
       }
-      return parsed.toString();
+      return parsed.toString().replace(/%5BREDACTED%5D/gi, '[REDACTED]');
     } catch (_) {
-      return rawUrl.replace(/([?&](?:token|ticket|auth|jwt|sign|key|secret)=)[^&#]*/gi, '$1[REDACTED]');
+      return rawUrl.replace(/([?&](?:token|ticket|auth|jwt|sign|key|secret|session|enc)=)[^&#]*/gi, '$1[REDACTED]');
     }
   };
 

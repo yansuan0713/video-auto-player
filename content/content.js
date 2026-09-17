@@ -45,7 +45,9 @@
   function scan() {
     if (!started) return [];
     if (location.href !== lastScanUrl) {
-      AutoNext.debug(`页面 URL 变化：${lastScanUrl} → ${location.href}（SPA 换页）`);
+      const safeOld = dom.sanitizeUrl ? dom.sanitizeUrl(lastScanUrl) : lastScanUrl;
+      const safeNew = dom.sanitizeUrl ? dom.sanitizeUrl(location.href) : location.href;
+      AutoNext.debug(`页面 URL 变化：${safeOld} → ${safeNew}（SPA 换页）`);
       lastScanUrl = location.href;
       videoHandler.resetCycle();
       skip.onPageSettled('SPA 换页后');
@@ -149,7 +151,9 @@
   function watchSpaNavigation() {
     const notifyRoute = () => {
       if (location.href !== lastScanUrl) {
-        AutoNext.debug(`SPA 路由切换检测：${lastScanUrl} → ${location.href}`);
+        const safeOld = dom.sanitizeUrl ? dom.sanitizeUrl(lastScanUrl) : lastScanUrl;
+        const safeNew = dom.sanitizeUrl ? dom.sanitizeUrl(location.href) : location.href;
+        AutoNext.debug(`SPA 路由切换检测：${safeOld} → ${safeNew}`);
         lastScanUrl = location.href;
         videoHandler.resetCycle();
         scheduleScan(150);
@@ -157,27 +161,17 @@
       }
     };
 
-    try {
-      if (window.history) {
-        const origPush = window.history.pushState;
-        if (typeof origPush === 'function') {
-          window.history.pushState = function (...args) {
-            const ret = origPush.apply(this, args);
-            notifyRoute();
-            return ret;
-          };
-        }
-        const origReplace = window.history.replaceState;
-        if (typeof origReplace === 'function') {
-          window.history.replaceState = function (...args) {
-            const ret = origReplace.apply(this, args);
-            notifyRoute();
-            return ret;
-          };
-        }
-      }
-    } catch (_) { /* 某些安全策略下忽略 */ }
-
+    /**
+     * Isolated World 限制说明：
+     * MV3 content script 运行在独立的主机世界（isolated world），
+     * 宿主页面（MAIN world）中 React/Vue/Angular 前端框架调用 history.pushState / replaceState
+     * 只影响 MAIN 作用域内的上下文，不会经过 content script 中的 window.history 对象。
+     * 直接在 content script 中 monkey-patch pushState/replaceState 无法拦截页面发起的导航。
+     * 本项目遵守最小权限与零冲突安全规范，不向页面注入 MAIN world 脚本，而是结合：
+     * 1. window popstate 事件（用户前进/后退/历史出栈）
+     * 2. window hashchange 事件（基于锚点路由的单页切换）
+     * 3. urlCheckTimer 周期性轮询（兜底捕获 pushState/replaceState 驱动的 SPA 路径变更）
+     */
     window.addEventListener('popstate', notifyRoute);
     window.addEventListener('hashchange', notifyRoute);
   }
@@ -231,7 +225,14 @@
     startObserver();
     videoHandler.startWatchdog(); // 兜底：平台在结尾自行暂停、不触发 ended 时也能识别
     urlCheckTimer = setInterval(() => {
-      if (location.href !== lastScanUrl) scheduleScan(100);
+      if (location.href !== lastScanUrl) {
+        const safeOld = dom.sanitizeUrl ? dom.sanitizeUrl(lastScanUrl) : lastScanUrl;
+        const safeNew = dom.sanitizeUrl ? dom.sanitizeUrl(location.href) : location.href;
+        AutoNext.debug(`轮询检测到页面 URL 变化：${safeOld} → ${safeNew}`);
+        lastScanUrl = location.href;
+        videoHandler.resetCycle();
+        scheduleScan(100);
+      }
     }, URL_CHECK_MS);
   }
 

@@ -123,7 +123,7 @@
     if (firstDetection) {
       rec.detectedLogged = true;
       const sanitizedSrc = dom.sanitizeUrl ? dom.sanitizeUrl(video.currentSrc || '') : (video.currentSrc || '');
-      AutoNext.log('video detected', `${Math.round(video.duration)}s`, video.currentSrc || '(无 src)',
+      AutoNext.log('video detected', `${Math.round(video.duration)}s`, sanitizedSrc || '(无 src)',
         `| ${reason}`);
       if (AutoNext.addEvent) {
         AutoNext.addEvent('VIDEO_DETECTED', {
