@@ -55,6 +55,53 @@
     out('error', args); // 错误始终输出，即使已静音
   };
 
+  const MAX_EVENTS = 50;
+  const events = [];
+
+  /**
+   * 记录关键事件（供诊断面板与导出使用）
+   * @param {string} type 事件类型：VIDEO_DETECTED, RATE_CHANGE, PAUSED, RESUME, ENDED, NEXT_FOUND, NAVIGATED, etc.
+   * @param {any} detail 事件详情
+   */
+  AutoNext.addEvent = (type, detail = {}) => {
+    const now = Date.now();
+    let timeStr = '';
+    try {
+      timeStr = new Date(now).toLocaleTimeString();
+    } catch (_) {
+      const sec = Math.floor(now / 1000) % 86400;
+      const h = String(Math.floor(sec / 3600)).padStart(2, '0');
+      const m = String(Math.floor((sec % 3600) / 60)).padStart(2, '0');
+      const s = String(sec % 60).padStart(2, '0');
+      timeStr = `${h}:${m}:${s}`;
+    }
+    const item = {
+      timestamp: now,
+      timeStr: timeStr || String(now),
+      type: String(type || 'EVENT'),
+      detail: typeof detail === 'string' ? { message: detail } : (detail ? { ...detail } : {})
+    };
+    events.push(item);
+    if (events.length > MAX_EVENTS) {
+      events.shift();
+    }
+  };
+
+  AutoNext.getEvents = () => events.slice();
+  AutoNext.clearEvents = () => { events.length = 0; };
+
+  AutoNext.logger = {
+    addEvent: AutoNext.addEvent,
+    getEvents: AutoNext.getEvents,
+    clearEvents: AutoNext.clearEvents,
+    log: AutoNext.log,
+    debug: AutoNext.debug,
+    info: AutoNext.info,
+    warn: AutoNext.warn,
+    error: AutoNext.error,
+    setLogOptions: AutoNext.setLogOptions
+  };
+
   /**
    * 由 settings 模块调用
    * @param {{verbose?: boolean, enabled?: boolean}} options

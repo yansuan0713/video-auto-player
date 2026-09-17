@@ -147,10 +147,13 @@
   }
 
   /**
-   * 扫描当前 document，返回按可信度降序排列的候选按钮
+   * 扫描当前 document，返回按可信度降序排列的候选按钮。
+   * 支持用户为特定站点配置的自定义 CSS 选择器：自定义规则优先（分值 1000），
+   * 但必须继续经受反向词（“上一节/返回/重播”）、禁用态和可见性的严格安全检验。
+   * @param {string} [customSelector] 可选的自定义选择器（缺省自动取 settings 中的站点规则）
    * @returns {Array<{el: HTMLElement, score: number, reason: string, text: string}>}
    */
-  function findCandidates() {
+  function findCandidates(customSelector) {
     const selectorHits = collectSelectorHits();
     const results = new Map();
 
@@ -192,6 +195,37 @@
       }
     };
 
+    // 0) 自定义选择器优先匹配（若配置）
+    const effectiveSelector = typeof customSelector === 'string' && customSelector.trim()
+      ? customSelector.trim()
+      : (AutoNext.settings && typeof AutoNext.settings.customNextSelector === 'string'
+        ? AutoNext.settings.customNextSelector.trim()
+        : '');
+
+    if (effectiveSelector) {
+      const customMatches = safeQueryAll(effectiveSelector);
+      for (const rawEl of customMatches) {
+        if (!rawEl || !rawEl.tagName || rawEl === document.body || rawEl === document.documentElement) continue;
+        const el = closestClickable(rawEl) || rawEl;
+        const ownText = dom.ownTextOf(el);
+        // 安全底线：即使用户填的选择器命中了“上一节/返回/重播”，也坚决排除，绝不反向跳转
+        if (hasNegative(dom.normalize(ownText))) {
+          AutoNext.debug(`自定义选择器命中元素含有反向词，已安全排除：${ownText}`);
+          continue;
+        }
+        if (dom.isDisabled(el) || !dom.isVisible(el)) continue;
+
+        const text = dom.textOf(el);
+        const normalized = dom.normalize(text);
+        results.set(el, {
+          el,
+          score: 1000,
+          reason: `自定义规则 [${effectiveSelector}]`,
+          text: normalized
+        });
+      }
+    }
+
     // 1) 选择器命中的元素
     for (const el of selectorHits.keys()) consider(el, 0, 'selector');
 
@@ -207,9 +241,10 @@
   /**
    * 找到最可信的“下一个”按钮
    * @param {number} minScore 可信度阈值，低于该值视为“没找到”
+   * @param {string} [customSelector] 可选的自定义选择器
    */
-  function findNextButton(minScore = 40) {
-    const candidates = findCandidates();
+  function findNextButton(minScore = 40, customSelector) {
+    const candidates = findCandidates(customSelector);
     const best = candidates[0];
     if (!best || best.score < minScore) {
       if (best) AutoNext.debug(`候选按钮可信度不足（${best.score} < ${minScore}），视为未找到`);
@@ -218,12 +253,16 @@
     return best;
   }
 
-  /** 在当前页面查找并点击；返回被点击的元素或 null */
-  function clickNextButton(minScore = 40) {
-    const found = findNextButton(minScore);
+  /**
+   * 在当前页面查找并点击；返回被点击的元素或 null
+   * @param {number} minScore 可信度阈值
+   * @param {string} [customSelector] 可选的自定义选择器
+   */
+  function clickNextButton(minScore = 40, customSelector) {
+    const found = findNextButton(minScore, customSelector);
     if (!found) {
       AutoNext.warn('next lesson not found：页面里没有找到可信的“下一节 / 下一个任务点”按钮');
-      AutoNext.debug('候选列表：', findCandidates().slice(0, 8).map((c) => `${c.el.tagName}=${c.score}(${c.reason})`));
+      AutoNext.debug('候选列表：', findCandidates(customSelector).slice(0, 8).map((c) => `${c.el.tagName}=${c.score}(${c.reason})`));
       return null;
     }
     AutoNext.log('next lesson found', found.text || '(无文字)', `score=${found.score}`, found.reason);

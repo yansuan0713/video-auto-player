@@ -26,10 +26,11 @@
   const TYPES = {
     VIDEO: 'AUTO_NEXT_VIDEO_ENDED',
     SCAN: 'AUTO_NEXT_SCAN',
+    NAVIGATING: 'AUTO_NEXT_NAVIGATING',
     NAVIGATED: 'AUTO_NEXT_NAVIGATED'
   };
 
-  const NAVIGATION_COOLDOWN = 1500; // 同一个 tab 内 1.5s 只允许一次跳转
+  const NAVIGATION_COOLDOWN = 2000; // 同一个 tab 内 2.0s 只允许一次跳转
   const SEEN_LIMIT = 40; // 记最近若干条消息 id，防止中继回环
 
   let lastNavigationAt = 0;
@@ -127,6 +128,15 @@
       return delivered;
     },
 
+    /** 广播“正在跳转中”，锁定所有 frame 防止并发竞争 */
+    reportNavigating(id) {
+      lastNavigationAt = Date.now();
+      const own = id || `m${(msgSeq += 1)}`;
+      markSeen(own);
+      messenger.broadcast(TYPES.NAVIGATING, own);
+      messenger.notifyParent(TYPES.NAVIGATING, own);
+    },
+
     /** 广播“已经跳转了”，让其他 frame 停下来 */
     reportNavigated(id) {
       lastNavigationAt = Date.now();
@@ -145,7 +155,7 @@
 
     /**
      * 注册消息处理
-     * @param {{onVideoEnded: Function, onScan: Function, onNavigated: Function}} handlers
+     * @param {{onVideoEnded: Function, onScan: Function, onNavigated: Function, onNavigating: Function}} handlers
      */
     listen(handlers = {}) {
       window.addEventListener('message', (event) => {
@@ -168,6 +178,10 @@
           }
           case TYPES.SCAN:
             if (handlers.onScan) handlers.onScan();
+            break;
+          case TYPES.NAVIGATING:
+            lastNavigationAt = Date.now();
+            if (handlers.onNavigating) handlers.onNavigating();
             break;
           case TYPES.NAVIGATED:
             lastNavigationAt = Date.now();
