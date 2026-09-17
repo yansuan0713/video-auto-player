@@ -438,6 +438,20 @@ async function testCustomSelectorAndSafetyFilters() {
     }));
     nextLink.addEventListener('click', () => clicked.push('wrapped-next'));
 
+    // 关键：同一 form 内同时存在 type="submit" 提交按钮与“提交测验”按钮，必须被严格排除
+    const submitBtn = formWrapper.append(new FakeElement('button', {
+      id: 'aspnet-submit',
+      attrs: { type: 'submit' },
+      text: '下一节'
+    }));
+    submitBtn.addEventListener('click', () => clicked.push('aspnet-submit'));
+
+    const quizBtn = formWrapper.append(new FakeElement('button', {
+      id: 'quiz-submit',
+      text: '提交测验'
+    }));
+    quizBtn.addEventListener('click', () => clicked.push('quiz-submit'));
+
     const { sandbox, timers } = createSandbox({
       page: { documentElement: doc, body, video, state: { clicked } },
       storage: { autoNext: true }
@@ -452,6 +466,8 @@ async function testCustomSelectorAndSafetyFilters() {
     video.finish();
     await runTimers(timers);
     check('整页 form 包裹时仍能点击“下一节”', clicked.includes('wrapped-next'), JSON.stringify(clicked));
+    check('同一 form 内的 type="submit" 按钮必须被排除', !clicked.includes('aspnet-submit'), JSON.stringify(clicked));
+    check('同一 form 内的“提交测验”按钮必须被排除', !clicked.includes('quiz-submit'), JSON.stringify(clicked));
   }
 
   // 4.y 安全底线不回退：form 内的提交控件与带提交语义的按钮仍须排除
@@ -555,12 +571,11 @@ async function testUrlSanitization() {
   check('hash 含 at_/sig/credential 时整体替换为 #[REDACTED]', cleanHash.includes('#[REDACTED]'));
   check('hash 中签名明文无泄漏', !/9999|hashsig|hashcred/.test(cleanHash));
 
-  // 5.3 反向保护：精确键匹配不得误伤只"看起来像"的普通参数
-  //     注意 format_ 含 at_ 子串，按子串规则会脱敏属预期行为，因此不纳入本断言
-  const safeUrl = 'https://a.test/x?design=modern&signal=weak&chapterId=8&courseTitle=math';
+  // 5.3 反向保护：精确键匹配不得误伤只"看起来像"的普通参数（query 和 hash 中均不得误伤 format_ / signal）
+  const safeUrl = 'https://a.test/x?design=modern&signal=weak&format_=mp4&chapterId=8&courseTitle=math#format_=mp4&signal=weak';
   const cleanSafe = dom.sanitizeUrl(safeUrl);
-  check('design/signal 等含 sign 子串的正常参数不被误伤',
-    cleanSafe.includes('design=modern') && cleanSafe.includes('signal=weak'),
+  check('design/signal/format_ 等普通参数在 query 与 hash 中均不被误伤',
+    cleanSafe.includes('design=modern') && cleanSafe.includes('signal=weak') && cleanSafe.includes('format_=mp4') && cleanSafe.includes('#format_=mp4&signal=weak'),
     cleanSafe);
   check('普通业务参数 chapterId/courseTitle 保持原样',
     cleanSafe.includes('chapterId=8') && cleanSafe.includes('courseTitle=math'),

@@ -252,6 +252,8 @@
     skip.stop();
     clearInterval(urlCheckTimer);
     urlCheckTimer = null;
+    clearTimeout(scanTimer);
+    scanTimer = null;
     videoHandler.resetCycle();
     AutoNext.log(`自动连播已停用（${frameLabel}）`);
   }

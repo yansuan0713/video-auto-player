@@ -163,7 +163,7 @@
             parsed.searchParams.set(key, '[REDACTED]');
           }
         }
-        if (parsed.hash && /token|ticket|auth|sign|key|secret|jwt|session|enc|at_|sig|credential/i.test(parsed.hash)) {
+        if (parsed.hash && /(?:^|[#&?=_])(?:token|ticket|auth|authorization|jwt|signature|sign|sig|at_|credential|x-amz-[a-z0-9-]+|key|secret|session|enc)(?:[=&_]|$)/i.test(parsed.hash)) {
           parsed.hash = '#[REDACTED]';
         }
         return parsed.toString().replace(/%5BREDACTED%5D/gi, '[REDACTED]');
