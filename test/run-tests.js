@@ -187,6 +187,7 @@ function createSandbox({ page, storage = {}, isTop = true, logSink = [], parentW
     clearInterval: frameWindow.clearInterval,
     HTMLVideoElement: FakeVideoElement,
     HTMLInputElement: FakeElement,
+    URL: typeof URL !== 'undefined' ? URL : globalThis.URL,
     location: hostWindow.location,
     MutationObserver: class {
       constructor(callback) {
@@ -1407,7 +1408,7 @@ async function testPauseForensics() {
   }
 }
 
-(async () => {
+async function runAllTests() {
   console.log('AutoNext content script 行为测试');
   console.log('='.repeat(60));
   await testChaoxingHappyPath();
@@ -1424,5 +1425,13 @@ async function testPauseForensics() {
   const failed = results.filter((r) => !r.ok);
   console.log('\n' + '='.repeat(60));
   console.log(`共 ${results.length} 项断言，通过 ${results.length - failed.length}，失败 ${failed.length}`);
-  process.exit(failed.length ? 1 : 0);
-})();
+  return failed.length;
+}
+
+if (require.main === module) {
+  runAllTests().then((failedCount) => {
+    process.exit(failedCount ? 1 : 0);
+  });
+}
+
+module.exports = { createSandbox, loadExtension, runTimers, buildLessonPage, check, results, runAllTests };

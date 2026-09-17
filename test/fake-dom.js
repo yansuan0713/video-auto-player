@@ -94,12 +94,23 @@ class FakeElement {
     this.classList = new FakeClassList(this);
     this._text = '';
     this.isConnected = true;
+    this.shadowRoot = null;
     if (opts.id) this.id = opts.id;
     if (opts.class) this.className = opts.class;
     if (opts.text) this._text = opts.text;
     if (opts.attrs) for (const [k, v] of Object.entries(opts.attrs)) this.attributes[k] = String(v);
     if (opts.style) this.style = opts.style;
     if (opts.parent) opts.parent.append(this);
+  }
+
+  attachShadow(opts = { mode: 'open' }) {
+    const root = new FakeElement('#shadow-root');
+    root.host = this;
+    root.mode = opts.mode;
+    if (opts.mode === 'open') {
+      this.shadowRoot = root;
+    }
+    return root;
   }
 
   get textContent() {
