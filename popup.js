@@ -816,12 +816,7 @@ async function runDetection() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab || !tab.id) throw new Error('找不到当前标签页');
 
-    let target = { tabId: tab.id };
-    try {
-      const frames = await chrome.webNavigation.getAllFrames({ tabId: tab.id });
-      if (frames && frames.length) target = { tabId: tab.id, frameIds: frames.map((f) => f.frameId) };
-    } catch (_) { /* 降级为主 frame */ }
-
+    const target = { tabId: tab.id, allFrames: true };
     const results = await chrome.scripting.executeScript({ target, func: probeFrame });
     const rows = results
       .slice()
@@ -946,12 +941,7 @@ if (ui.clickNext) {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab || !tab.id) throw new Error('找不到当前标签页');
 
-      let target = { tabId: tab.id };
-      try {
-        const frames = await chrome.webNavigation.getAllFrames({ tabId: tab.id });
-        if (frames && frames.length) target = { tabId: tab.id, frameIds: frames.map((f) => f.frameId) };
-      } catch (_) { /* 降级为主 frame */ }
-
+      const target = { tabId: tab.id, allFrames: true };
       const results = await chrome.scripting.executeScript({ target, func: probeClickNext });
       const rows = results
         .slice()

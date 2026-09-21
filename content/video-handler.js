@@ -556,8 +556,19 @@
     /** 诊断用：发出了几次协助请求、投递到了几个 frame */
     handoffCount: 0,
     handoffDelivered: 0,
-    lastEndedAt: 0
+    lastEndedAt: 0,
+    /** 用户手动点击导航后的静默保护期截至时间戳 */
+    manualNavGraceUntil: 0
   };
+
+  /** 用户手动触发导航后，进入静默保护期，杜绝旧视频 ended 或 watchdog 重复跳节 */
+  function notifyManualNavigation(graceMs = 2500) {
+    const now = Date.now();
+    cycle.manualNavGraceUntil = now + graceMs;
+    cycle.lastEndedAt = now;
+    resetCycle({ keepSource: true });
+    AutoNext.debug(`已生效手动导航静默保护期，持续 ${graceMs}ms`);
+  }
 
   function resetCycle({ keepSource = true } = {}) {
     cycle.running = false;
@@ -714,6 +725,10 @@
       return;
     }
     const now = Date.now();
+    if (cycle.manualNavGraceUntil && now < cycle.manualNavGraceUntil) {
+      AutoNext.debug(`当前处于手动导航静默保护期（剩余 ${cycle.manualNavGraceUntil - now}ms），忽略自动跳转`);
+      return;
+    }
     if (now - cycle.lastEndedAt < 3000) {
       AutoNext.debug('3 秒内重复的 ended 事件，忽略');
       return;
@@ -740,6 +755,8 @@
     state.watchdogTimer = setInterval(() => {
       if (!AutoNext.settings.enabled) return;
       if (cycle.running || cycle.navigated) return;
+      const now = Date.now();
+      if (cycle.manualNavGraceUntil && now < cycle.manualNavGraceUntil) return;
       const video = state.active;
       if (!video || !isEligible(video)) return;
       const rec = recordOf(video, { create: false });
@@ -897,6 +914,7 @@
     triggerNextLesson,
     attemptNext,
     markDetected,
+    notifyManualNavigation,
     resetCycle: () => resetCycle({ keepSource: false }),
     configure(opts) {
       options = { ...options, ...opts };

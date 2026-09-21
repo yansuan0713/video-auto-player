@@ -98,7 +98,8 @@
         clientY: rect.top + rect.height / 2
       };
       const hasPointer = typeof window.PointerEvent === 'function';
-      for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+      // 派发指针与鼠标按下/抬起事件，以适配需要完整手势序列的现代前端框架
+      for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
         const isPointer = type.startsWith('pointer');
         if (isPointer && !hasPointer) continue;
         const Ctor = isPointer ? window.PointerEvent : window.MouseEvent;
@@ -108,9 +109,21 @@
           AutoNext.debug('派发事件失败：', type, err && err.message);
         }
       }
-      // 事件被 preventDefault 时兜底调用原生 click()
+      // 触发最终点击：原生 el.click() 会自动派发 click 事件并执行浏览器默认行为（如下一页链接跳转）
+      // 避免先 dispatchEvent('click') 又调 el.click() 导致 click 事件被触发两遍
+      let nativeClicked = false;
       if (typeof el.click === 'function' && !(typeof HTMLInputElement !== 'undefined' && el instanceof HTMLInputElement)) {
-        try { el.click(); } catch (_) { /* ignore */ }
+        try {
+          el.click();
+          nativeClicked = true;
+        } catch (_) { /* ignore */ }
+      }
+      if (!nativeClicked) {
+        try {
+          el.dispatchEvent(new window.MouseEvent('click', opts));
+        } catch (err) {
+          AutoNext.debug('派发事件失败：click', err && err.message);
+        }
       }
     },
 

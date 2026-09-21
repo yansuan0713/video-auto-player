@@ -970,10 +970,138 @@ async function testMultiTaskAndQuizNav() {
 }
 
 // ————————————————————————————————————————————————————————————————
+// [Suite 12] 自审加固：单击事件去重、手动静默期与全局选择器实时更新
+// ————————————————————————————————————————————————————————————————
+async function testClickDeduplicationAndGrace() {
+  console.log('\n[Suite 12] 自审加固：单击事件去重、手动静默期与全局选择器实时更新');
+
+  // 12.1 dom.click(el) 单次派发保障（杜绝双重 click 事件）
+  {
+    const doc = new FakeElement('html');
+    const body = doc.append(new FakeElement('body'));
+    const btn = body.append(new FakeElement('button', { id: 'test-btn', text: '按钮' }));
+    let clickCount = 0;
+    btn.addEventListener('click', () => { clickCount += 1; });
+
+    const { sandbox, timers } = createSandbox({
+      page: { documentElement: doc, body }
+    });
+    loadExtension(sandbox);
+    await runTimers(timers);
+
+    sandbox.window.AutoNext.dom.click(btn);
+    check('dom.click(el) 触发 click 事件恰好 1 次（杜绝双重触发）', clickCount === 1, `clickCount=${clickCount}`);
+  }
+
+  // 12.2 用户手动导航后 2.5s 静默期有效拦截自动跳转
+  {
+    const doc = new FakeElement('html');
+    const body = doc.append(new FakeElement('body'));
+    const video = body.append(new FakeVideoElement({ duration: 600 }));
+    const clicked = [];
+    const nextBtn = body.append(new FakeElement('button', { id: 'nextBtn', text: '下一节' }));
+    nextBtn.addEventListener('click', () => clicked.push('next-btn'));
+
+    const { sandbox, timers, clock } = createSandbox({
+      page: { documentElement: doc, body, video, state: { clicked } },
+      storage: { autoNext: true }
+    });
+    loadExtension(sandbox);
+    await runTimers(timers);
+
+    // 模拟用户手动点击了“下一节”
+    sandbox.window.AutoNext.videoHandler.notifyManualNavigation(2500);
+
+    // 紧接着旧视频触发自然结束（或 watchdog 命中）
+    sandbox.window.AutoNext.videoHandler.triggerNextLesson('测试结束');
+    await runTimers(timers);
+
+    check('静默期内阻止自动连播重复点击下一节（防跳两节）', clicked.length === 0, JSON.stringify(clicked));
+
+    // 快进时间超过 2500ms 静默期
+    clock.advance(3500);
+    sandbox.window.AutoNext.videoHandler.triggerNextLesson('静默期后新视频结束');
+    await runTimers(timers);
+
+    check('静默期结束后恢复正常自动跳转', clicked.includes('next-btn'), JSON.stringify(clicked));
+  }
+
+  // 12.3 全局 customNextSelector 变更在已打开页面实时生效
+  {
+    const doc = new FakeElement('html');
+    const body = doc.append(new FakeElement('body'));
+    let notifiedChange = null;
+
+    const { sandbox, timers, storageListeners } = createSandbox({
+      page: { documentElement: doc, body },
+      storage: { autoNext: true, customNextSelector: '' }
+    });
+    loadExtension(sandbox);
+    await runTimers(timers);
+
+    sandbox.window.AutoNext.settings.subscribe((changes) => {
+      notifiedChange = changes;
+    });
+
+    // 模拟 storage 中改变了全局 customNextSelector
+    storageListeners.forEach((fn) => fn({
+      customNextSelector: { newValue: '.custom-next-btn', oldValue: '' }
+    }, 'local'));
+    await runTimers(timers);
+
+    check('全局 customNextSelector 变更被 settings 实时更新',
+      sandbox.window.AutoNext.settings.customNextSelector === '.custom-next-btn',
+      sandbox.window.AutoNext.settings.customNextSelector);
+    check('settings.subscribe 成功派发 customNextSelector 变更通知',
+      notifiedChange && notifiedChange.customNextSelector === '.custom-next-btn',
+      JSON.stringify(notifiedChange));
+  }
+
+  // 12.4 全局设置更新时不覆盖站点的独立禁用规则
+  {
+    const doc = new FakeElement('html');
+    const body = doc.append(new FakeElement('body'));
+
+    const { sandbox, timers, storageListeners } = createSandbox({
+      page: { documentElement: doc, body },
+      storage: {
+        autoNext: false,
+        siteSettings: {
+          'special.site.com': { override: true, autoNext: false }
+        }
+      }
+    });
+    sandbox.location.href = 'https://special.site.com/study';
+    loadExtension(sandbox);
+    await runTimers(timers);
+
+    // 外部修改全局 autoNext 为 true
+    storageListeners.forEach((fn) => fn({
+      autoNext: { newValue: true, oldValue: false }
+    }, 'local'));
+    await runTimers(timers);
+
+    check('站点规则独立禁用时，全局开关开启不破坏站点覆盖',
+      sandbox.window.AutoNext.settings.enabled === false,
+      `enabled=${sandbox.window.AutoNext.settings.enabled}`);
+  }
+
+  // 12.5 零 webNavigation 权限与 API 依赖
+  {
+    const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '../manifest.json'), 'utf8'));
+    const permissions = manifest.permissions || [];
+    check('manifest.json 中已彻底移除 webNavigation 权限', !permissions.includes('webNavigation'), JSON.stringify(permissions));
+
+    const popupCode = fs.readFileSync(path.join(__dirname, '../popup.js'), 'utf8');
+    check('popup.js 中绝无 chrome.webNavigation 遗留调用', !popupCode.includes('chrome.webNavigation'));
+  }
+}
+
+// ————————————————————————————————————————————————————————————————
 // 主执行器
 // ————————————————————————————————————————————————————————————————
 (async () => {
-  console.log('Video Auto Player v1.2.0 新特性全量测试套件');
+  console.log('Video Auto Player v1.2.1 全量测试套件');
   console.log('='.repeat(60));
 
   await testSettingsMigration();
@@ -987,6 +1115,7 @@ async function testMultiTaskAndQuizNav() {
   await testPopupAndCspCompliance();
   await testEnableDisableLifecycle();
   await testMultiTaskAndQuizNav();
+  await testClickDeduplicationAndGrace();
 
   const failed = results.filter((r) => !r.ok);
   console.log('\n' + '='.repeat(60));

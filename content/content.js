@@ -136,7 +136,11 @@
         if (!text || text.length > 40) return;
         if (/(下一节|下一章|下一个|下一任务点|上一节|上一章)/.test(text)) {
           AutoNext.debug(`检测到手动导航点击（${text}），静默 ${MANUAL_CLICK_GRACE_MS}ms 以免重复跳转`);
-          videoHandler.resetCycle();
+          if (videoHandler && typeof videoHandler.notifyManualNavigation === 'function') {
+            videoHandler.notifyManualNavigation(MANUAL_CLICK_GRACE_MS);
+          } else {
+            videoHandler.resetCycle();
+          }
           setTimeout(() => {
             AutoNext.debug('手动导航静默期结束');
           }, MANUAL_CLICK_GRACE_MS);

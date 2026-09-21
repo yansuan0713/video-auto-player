@@ -16,6 +16,7 @@
     playbackRate: 2.0,
     autoSkipNonVideo: false,
     verbose: false,
+    customNextSelector: '',
     siteSettings: {},
     configVersion: '1.2.0'
   };
@@ -47,6 +48,11 @@
 
     if (!next.siteSettings || typeof next.siteSettings !== 'object' || Array.isArray(next.siteSettings)) {
       next.siteSettings = {};
+      changed = true;
+    }
+
+    if (typeof next.customNextSelector !== 'string') {
+      next.customNextSelector = typeof raw.customSelector === 'string' ? raw.customSelector : '';
       changed = true;
     }
 
@@ -141,6 +147,80 @@
 
   let cachedValues = { ...DEFAULTS };
   let effectiveValues = resolveEffective(cachedValues);
+
+  const subscribers = [];
+  let storageListenerBound = false;
+
+  function ensureStorageListener() {
+    if (storageListenerBound || !AutoNext.hasStorage || !chrome.storage.onChanged) return;
+    storageListenerBound = true;
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local') return;
+      if (changes.verbose) {
+        apply({ verbose: changes.verbose.newValue === true });
+      }
+      if (changes.autoNext) {
+        cachedValues.autoNext = changes.autoNext.newValue === true;
+      }
+      if (changes.autoRate2x || changes.autoRate) {
+        const nextVal = (changes.autoRate && changes.autoRate.newValue === true) ||
+                        (changes.autoRate2x && changes.autoRate2x.newValue === true);
+        cachedValues.autoRate = nextVal;
+        cachedValues.autoRate2x = nextVal;
+      }
+      if (changes.playbackRate && typeof changes.playbackRate.newValue === 'number') {
+        cachedValues.playbackRate = changes.playbackRate.newValue;
+      }
+      if (changes.autoSkipNonVideo) {
+        cachedValues.autoSkipNonVideo = changes.autoSkipNonVideo.newValue === true;
+      }
+      if (changes.customNextSelector || changes.customSelector) {
+        const nextVal = (changes.customNextSelector ? changes.customNextSelector.newValue : changes.customSelector.newValue) || '';
+        cachedValues.customNextSelector = String(nextVal);
+        cachedValues.customSelector = String(nextVal);
+      }
+      if (changes.siteSettings) {
+        cachedValues.siteSettings = changes.siteSettings.newValue || {};
+      }
+
+      // 重新计算当前 frame 的最终生效设置（严格保持站点覆盖规则优先级）
+      const prevEffective = { ...effectiveValues };
+      effectiveValues = resolveEffective(cachedValues);
+
+      const changed = {};
+      if (effectiveValues.autoNext !== prevEffective.autoNext) {
+        changed.autoNext = effectiveValues.autoNext;
+        AutoNext.log(effectiveValues.autoNext ? '自动进入下一节已开启' : '自动进入下一节已关闭');
+      }
+      if (effectiveValues.autoRate !== prevEffective.autoRate) {
+        changed.autoRate = effectiveValues.autoRate;
+        changed.autoRate2x = effectiveValues.autoRate;
+      }
+      if (effectiveValues.playbackRate !== prevEffective.playbackRate) {
+        changed.playbackRate = effectiveValues.playbackRate;
+      }
+      if (effectiveValues.autoSkipNonVideo !== prevEffective.autoSkipNonVideo) {
+        changed.autoSkipNonVideo = effectiveValues.autoSkipNonVideo;
+      }
+      if (effectiveValues.customNextSelector !== prevEffective.customNextSelector) {
+        changed.customNextSelector = effectiveValues.customNextSelector;
+        AutoNext.debug(`生效自定义选择器更新为：${effectiveValues.customNextSelector || '(空)'}`);
+      }
+      if (changes.siteSettings) {
+        changed.siteSettings = cachedValues.siteSettings;
+      }
+
+      if (Object.keys(changed).length) {
+        for (const cb of subscribers) {
+          try {
+            cb(changed);
+          } catch (err) {
+            AutoNext.error('配置订阅回调异常：', err);
+          }
+        }
+      }
+    });
+  }
 
   AutoNext.settings = {
     DEFAULTS,
@@ -266,50 +346,10 @@
 
     /** 订阅变更：popup 一改开关，已打开的页面立刻生效 */
     subscribe(onChange) {
-      if (!AutoNext.hasStorage || !chrome.storage.onChanged) return;
-      chrome.storage.onChanged.addListener((changes, area) => {
-        if (area !== 'local') return;
-        if (changes.verbose) {
-          apply({ verbose: changes.verbose.newValue === true });
-        }
-        const changed = {};
-        if (changes.autoNext) {
-          const nextVal = changes.autoNext.newValue === true;
-          cachedValues.autoNext = nextVal;
-          effectiveValues.autoNext = nextVal;
-          changed.autoNext = nextVal;
-          AutoNext.log(nextVal ? '自动进入下一节已开启' : '自动进入下一节已关闭');
-        }
-        if (changes.autoRate2x || changes.autoRate) {
-          const nextVal = (changes.autoRate && changes.autoRate.newValue === true) ||
-                          (changes.autoRate2x && changes.autoRate2x.newValue === true);
-          cachedValues.autoRate = nextVal;
-          cachedValues.autoRate2x = nextVal;
-          effectiveValues.autoRate = nextVal;
-          effectiveValues.autoRate2x = nextVal;
-          changed.autoRate = nextVal;
-          changed.autoRate2x = nextVal;
-        }
-        if (changes.playbackRate && typeof changes.playbackRate.newValue === 'number') {
-          cachedValues.playbackRate = changes.playbackRate.newValue;
-          effectiveValues.playbackRate = changes.playbackRate.newValue;
-          changed.playbackRate = effectiveValues.playbackRate;
-        }
-        if (changes.autoSkipNonVideo) {
-          const nextVal = changes.autoSkipNonVideo.newValue === true;
-          cachedValues.autoSkipNonVideo = nextVal;
-          effectiveValues.autoSkipNonVideo = nextVal;
-          changed.autoSkipNonVideo = nextVal;
-        }
-        if (changes.siteSettings) {
-          cachedValues.siteSettings = changes.siteSettings.newValue || {};
-          effectiveValues = resolveEffective(cachedValues);
-          changed.siteSettings = cachedValues.siteSettings;
-        }
-        if (typeof onChange === 'function' && Object.keys(changed).length) {
-          onChange(changed);
-        }
-      });
+      if (typeof onChange === 'function') {
+        subscribers.push(onChange);
+      }
+      ensureStorageListener();
     }
   };
 
