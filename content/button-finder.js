@@ -30,7 +30,6 @@
     ['.tabtags span.currents ~ span:not(.currents):not(.active)', 190],
     ['.tabtags li.currents ~ li:not(.currents):not(.active)', 190],
     ['[id^="dct"].currents ~ [id^="dct"]:not(.currents):not(.active)', 190],
-    ['.ans-job-icon:not(.ans-job-finished)', 190],
 
     // —— 超星学习通常见跨章节结构（由具体到通用） ——
     ['#prevNextFocusNext', 100],
@@ -219,6 +218,61 @@
   }
 
   /**
+   * 超星学习通专用：从 #coursetree / .course_tree / .posCatalog_box 目录树中
+   * 严格按顺序寻找当前激活小节的下一个小节 (currentIndex + 1)
+   */
+  function findChaoxingNextCatalogItem() {
+    const tree = document.querySelector('#coursetree, .course_tree, .posCatalog_box');
+    if (!tree) return null;
+
+    // 查找所有可选小节条目（排除第一级章标题 .firstLayer）
+    let items = safeQueryAll('#coursetree .posCatalog_select:not(.firstLayer), .course_tree .posCatalog_select:not(.firstLayer), .posCatalog_box .posCatalog_select:not(.firstLayer)');
+    if (!items.length) {
+      items = safeQueryAll('#coursetree .posCatalog_select, .course_tree .posCatalog_select, .posCatalog_box .posCatalog_select, #coursetree [id^="cur"], .course_tree [id^="cur"]');
+    }
+    if (!items.length) return null;
+
+    // 定位当前激活项索引
+    const activeIndex = items.findIndex((el) =>
+      el.classList.contains('posCatalog_active') ||
+      el.classList.contains('active') ||
+      (el.querySelector && el.querySelector('.posCatalog_active, .active')) !== null
+    );
+
+    // 未找到激活项，或者已到最后一项，无法继续前进
+    if (activeIndex === -1 || activeIndex >= items.length - 1) {
+      return null;
+    }
+
+    // 严格按索引顺序取下一个小节 (currentIndex + 1)
+    const nextItem = items[activeIndex + 1];
+    if (!nextItem) return null;
+
+    // 严禁点击当前 active 项自身或包含 active 类名的节点
+    if (nextItem === items[activeIndex] || nextItem.classList.contains('posCatalog_active')) {
+      return null;
+    }
+
+    // 选取条目内最精确的可点击目标（子级 a、posCatalog_name、可点击控件，或条目自身）
+    const clickableChild = nextItem.querySelector('a, [onclick], [role="button"], button');
+    const nameSpan = nextItem.querySelector('.posCatalog_name, .posCatalog_select_name, .title');
+    const targetEl = clickableChild || nameSpan || nextItem;
+
+    if (dom.isDisabled(targetEl) || !dom.isVisible(targetEl)) return null;
+
+    const rawText = dom.textOf(targetEl) || dom.textOf(nextItem);
+    const normalized = dom.normalize(rawText);
+    if (hasNegative(normalized)) return null;
+
+    return {
+      el: targetEl,
+      score: 95,
+      reason: 'chaoxing-coursetree-next+95',
+      text: normalized
+    };
+  }
+
+  /**
    * 扫描当前 document，返回按可信度降序排列的候选按钮。
    * 支持用户为特定站点配置的自定义 CSS 选择器：自定义规则优先（分值 1000），
    * 但必须继续经受反向词（“上一节/返回/重播/提交/测验”）、表单排除、禁用态和可见性的严格安全检验。
@@ -311,7 +365,13 @@
     // 1) 选择器命中的元素
     for (const el of selectorHits.keys()) consider(el, 0, 'selector');
 
-    // 2) 文本命中的元素：先看 clickable 控件，再兜底看带文字的小容器
+    // 2) 超星目录树专用结构识别（按顺序寻找当前激活项的下一小节）
+    const coursetreeCandidate = findChaoxingNextCatalogItem();
+    if (coursetreeCandidate && coursetreeCandidate.el) {
+      consider(coursetreeCandidate.el, 95, 'chaoxing-coursetree');
+    }
+
+    // 3) 文本命中的元素：先看 clickable 控件，再兜底看带文字的小容器
     for (const el of safeQueryAll('a, button, [role="button"], [role="link"], li, span, div, input[type="button"]')) {
       if (!el.textContent || dom.normalize(el.textContent).length > TEXT_LIMIT) continue;
       consider(el, 0, 'text');
@@ -324,10 +384,12 @@
    * 找到最可信的“下一个”按钮
    * @param {number} minScore 可信度阈值，低于该值视为“没找到”
    * @param {string} [customSelector] 可选的自定义选择器
+   * @param {Set<HTMLElement>} [excludeSet] 可选的排除集合（用于跳过之前点击未生效的元素）
    */
-  function findNextButton(minScore = 40, customSelector) {
+  function findNextButton(minScore = 40, customSelector, excludeSet) {
     const candidates = findCandidates(customSelector);
-    const best = candidates[0];
+    const valid = excludeSet ? candidates.filter((c) => !excludeSet.has(c.el)) : candidates;
+    const best = valid[0];
     if (!best || best.score < minScore) {
       if (best) AutoNext.debug(`候选按钮可信度不足（${best.score} < ${minScore}），视为未找到`);
       return null;
@@ -339,9 +401,10 @@
    * 在当前页面查找并点击；返回被点击的元素或 null
    * @param {number} minScore 可信度阈值
    * @param {string} [customSelector] 可选的自定义选择器
+   * @param {Set<HTMLElement>} [excludeSet] 可选的排除集合
    */
-  function clickNextButton(minScore = 40, customSelector) {
-    const found = findNextButton(minScore, customSelector);
+  function clickNextButton(minScore = 40, customSelector, excludeSet) {
+    const found = findNextButton(minScore, customSelector, excludeSet);
     if (!found) {
       AutoNext.warn('next lesson not found：页面里没有找到可信的“下一节 / 下一个任务点”按钮');
       AutoNext.debug('候选列表：', findCandidates(customSelector).slice(0, 8).map((c) => `${c.el.tagName}=${c.score}(${c.reason})`));
@@ -353,6 +416,11 @@
     return found.el;
   }
 
-  AutoNext.buttonFinder = { findCandidates, findNextButton, clickNextButton };
+  AutoNext.buttonFinder = {
+    findCandidates,
+    findNextButton,
+    clickNextButton,
+    findChaoxingNextCatalogItem
+  };
 
 })();

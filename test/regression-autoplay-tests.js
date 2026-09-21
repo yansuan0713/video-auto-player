@@ -395,6 +395,257 @@ async function testOldVideoPlayingDoesNotPrematurelyUnlock() {
     api.videoHandler.stats().cycle.navigated === false);
 }
 
+// ————————————————————————————————————————————————————————————————
+// H. 超星 #coursetree 树形目录结构导航与 .ans-job-icon 隔离
+// 验证：
+// 1. 在 #coursetree 树形结构下，当前在第 2 节，能正确选中第 3 节 (currentIndex + 1)
+// 2. 绝不选中第 1 节（前序已完成），也不选中当前第 2 节自身（active 项）
+// 3. 不选中顶级章目录 (.firstLayer)
+// 4. .ans-job-icon 纯状态图标不会干扰目录树下一节判定
+// ————————————————————————————————————————————————————————————————
+async function testChaoxingCoursetreeNavigationAndJobIconIsolation() {
+  console.log('\n[Suite H] 超星 #coursetree 树形目录结构导航与 .ans-job-icon 隔离');
+
+  const doc = new FakeElement('html');
+  const body = doc.append(new FakeElement('body'));
+  const video = body.append(new FakeVideoElement({ duration: 600 }));
+  const clicked = [];
+
+  const tree = body.append(new FakeElement('div', { id: 'coursetree', class: 'course_tree' }));
+
+  // 顶级章标题 (firstLayer)
+  const chapter1 = tree.append(new FakeElement('div', {
+    id: 'chap1',
+    class: 'posCatalog_select firstLayer',
+    text: '第一章 计算机网络体系结构'
+  }));
+
+  // 第 1 节 (前序完成，带有 .ans-job-icon 与 .ans-job-finished)
+  const sec1 = tree.append(new FakeElement('div', {
+    id: 'cur101',
+    class: 'posCatalog_select',
+    attrs: { onclick: 'getChapterCard(101)' }
+  }));
+  sec1.append(new FakeElement('span', { class: 'ans-job-icon ans-job-finished' }));
+  const sec1Title = sec1.append(new FakeElement('span', { class: 'posCatalog_name', text: '1.1 计算机网络概述' }));
+  sec1.addEventListener('click', () => clicked.push('sec1'));
+  sec1Title.addEventListener('click', () => clicked.push('sec1'));
+
+  // 第 2 节 (当前激活小节，带有未完成 .ans-job-icon)
+  const sec2 = tree.append(new FakeElement('div', {
+    id: 'cur102',
+    class: 'posCatalog_select posCatalog_active',
+    attrs: { onclick: 'getChapterCard(102)' }
+  }));
+  sec2.append(new FakeElement('span', { class: 'ans-job-icon' })); // 未完成任务黄点
+  const sec2Title = sec2.append(new FakeElement('span', { class: 'posCatalog_name', text: '1.2 电路交换与分组交换' }));
+  sec2.addEventListener('click', () => clicked.push('sec2'));
+  sec2Title.addEventListener('click', () => clicked.push('sec2'));
+
+  // 第 3 节 (目标下一小节，带有未完成 .ans-job-icon)
+  const sec3 = tree.append(new FakeElement('div', {
+    id: 'cur103',
+    class: 'posCatalog_select',
+    attrs: { onclick: 'getChapterCard(103)' }
+  }));
+  sec3.append(new FakeElement('span', { class: 'ans-job-icon' }));
+  const sec3Title = sec3.append(new FakeElement('span', { class: 'posCatalog_name', text: '1.3 计算机网络的性能指标' }));
+  sec3.addEventListener('click', () => clicked.push('sec3'));
+  sec3Title.addEventListener('click', () => clicked.push('sec3'));
+
+  const { sandbox, timers } = createSandbox({
+    page: { documentElement: doc, body, video, state: { clicked } },
+    storage: { autoNext: true }
+  });
+  const api = loadExtension(sandbox);
+  await runTimers(timers);
+
+  // 1. 验证 findChaoxingNextCatalogItem 直接定位
+  const nextCatalog = api.buttonFinder.findChaoxingNextCatalogItem();
+  check('正确识别到超星目录树下一小节', nextCatalog !== null && nextCatalog.score === 95);
+  check('选中的文本为 1.3 小节', nextCatalog && nextCatalog.text.includes('1.3'));
+  check('选中的元素属于第 3 节', nextCatalog && (nextCatalog.el === sec3 || nextCatalog.el === sec3Title));
+  check('绝未选中第 1 节（前序小节）', nextCatalog && nextCatalog.el !== sec1 && nextCatalog.el !== sec1Title);
+  check('绝未选中第 2 节自身（当前 active 项）', nextCatalog && nextCatalog.el !== sec2 && nextCatalog.el !== sec2Title);
+  check('绝未选中章标题 (firstLayer)', nextCatalog && nextCatalog.el !== chapter1);
+
+  // 2. 验证整体候选排序：.ans-job-icon 绝不上位，目录项作为高可信候选
+  const candidates = api.buttonFinder.findCandidates();
+  check('候选列表中不含纯 .ans-job-icon', !candidates.some((c) => c.el.classList && c.el.classList.contains('ans-job-icon')));
+  check('首选候选为第 3 节目标', candidates[0] && candidates[0].text.includes('1.3'));
+
+  // 3. 模拟视频播放完毕，触发自然跳转点击
+  video.watch(30);
+  video.finish();
+  await runTimers(timers);
+
+  check('实际点击了第 3 节', clicked.includes('sec3'));
+  check('绝未误点击第 1 节', !clicked.includes('sec1'));
+  check('绝未误点击当前第 2 节自身', !clicked.includes('sec2'));
+}
+
+// ————————————————————————————————————————————————————————————————
+// I. 点击动作与跳转确认解耦及 CLICK_NO_EFFECT 兜底重试
+// 验证：
+// 1. 点击后 DOM/URL/视频无变化时，短确认窗口超时判定为未生效 (CLICK_NO_EFFECT)
+// 2. 未生效时不标记 cycle.navigated = true
+// 3. 允许进入重试或备用候选，流程不卡死
+// 4. 状态发生真实变化时（如 .posCatalog_active 转移或视频换源），确认跳转并标记 navigated=true
+// ————————————————————————————————————————————————————————————————
+async function testNavigationConfirmationAndClickNoEffect() {
+  console.log('\n[Suite I] 点击动作与跳转确认解耦及 CLICK_NO_EFFECT 兜底重试');
+
+  // Case 1: 点击后无任何页面变化（无效点击）
+  {
+    const doc = new FakeElement('html');
+    const body = doc.append(new FakeElement('body'));
+    const video = body.append(new FakeVideoElement({ duration: 600, id: 'v-static' }));
+    video.src = 'https://example.com/static.mp4';
+    const clicked = [];
+
+    // 一个点击后什么也不发生的按钮
+    const dummyBtn = body.append(new FakeElement('button', {
+      id: 'dummy-next',
+      class: 'next-btn',
+      text: '下一节'
+    }));
+    dummyBtn.addEventListener('click', () => {
+      clicked.push('dummy-clicked');
+      // 故意不做任何 DOM 或 URL 改变
+    });
+
+    const { sandbox, timers, clock } = createSandbox({
+      page: { documentElement: doc, body, video, state: { clicked } },
+      storage: { autoNext: true }
+    });
+    const api = loadExtension(sandbox);
+    await runTimers(timers);
+
+    video.watch(30);
+    video.finish();
+
+    // 推进 1200ms 触发 attemptNext
+    await runTimers(timers, { maxRounds: 5 });
+    check('按钮已被实际执行了点击', clicked.includes('dummy-clicked'));
+
+    // 推进超过 2000ms 确认窗口
+    clock.advance(2500);
+    await runTimers(timers, { maxRounds: 10 });
+
+    const stats = api.videoHandler.stats();
+    const events = (sandbox.window.AutoNext && sandbox.window.AutoNext.getEvents) ? sandbox.window.AutoNext.getEvents() : [];
+    check('无状态变化时确认超时，绝不标记 cycle.navigated = true', stats.cycle.navigated === false);
+    check('记录了 CLICK_NO_EFFECT 异常事件', events.some((e) => e.type === 'CLICK_NO_EFFECT'));
+    check('无效果点击后记录了失败元素', stats.cycle.failedElements && stats.cycle.failedElements.has(dummyBtn));
+  }
+
+  // Case 2: 点击后发生状态变化（目录激活项移动），成功确认
+  {
+    const doc = new FakeElement('html');
+    const body = doc.append(new FakeElement('body'));
+    const video = body.append(new FakeVideoElement({ duration: 600, id: 'v-dynamic' }));
+    video.src = 'https://example.com/dynamic.mp4';
+    const clicked = [];
+
+    const tree = body.append(new FakeElement('div', { id: 'coursetree' }));
+    const curA = tree.append(new FakeElement('div', { id: 'nodeA', class: 'posCatalog_select posCatalog_active' }));
+    curA.append(new FakeElement('span', { class: 'posCatalog_name', text: '2.1 第一节' }));
+
+    const curB = tree.append(new FakeElement('div', { id: 'nodeB', class: 'posCatalog_select' }));
+    const curBTitle = curB.append(new FakeElement('span', { class: 'posCatalog_name', text: '2.2 第二节' }));
+
+    curB.addEventListener('click', () => {
+      clicked.push('nodeB-clicked');
+      // 真实超星行为：激活项移动
+      curA.classList.remove('posCatalog_active');
+      curB.classList.add('posCatalog_active');
+    });
+    curBTitle.addEventListener('click', () => {
+      clicked.push('nodeB-clicked');
+      curA.classList.remove('posCatalog_active');
+      curB.classList.add('posCatalog_active');
+    });
+
+    const { sandbox, timers } = createSandbox({
+      page: { documentElement: doc, body, video, state: { clicked } },
+      storage: { autoNext: true }
+    });
+    const api = loadExtension(sandbox);
+    await runTimers(timers);
+
+    video.watch(30);
+    video.finish();
+
+    await runTimers(timers, { maxRounds: 10 });
+
+    const stats = api.videoHandler.stats();
+    const events = (sandbox.window.AutoNext && sandbox.window.AutoNext.getEvents) ? sandbox.window.AutoNext.getEvents() : [];
+    check('目录激活项发生变化时确认跳转成功 (navigated=true)', stats.cycle.navigated === true);
+    check('广播了已跳转状态', api.messenger.recentlyNavigated() === true);
+    check('记录了 NAVIGATED 成功事件', events.some((e) => e.type === 'NAVIGATED'));
+  }
+}
+
+// ————————————————————————————————————————————————————————————————
+// J. 浏览器 Autoplay 策略拦截与临时静音开播兜底
+// 验证：
+// 1. 当视频 play() 报 NotAllowedError 时自动降级为 muted = true 重试
+// 2. 静音重试成功后记录 AUTOPLAY_MUTED_FALLBACK 事件并提示用户
+// 3. 用户触发点击手势后恢复原始声音状态 (muted = false)
+// ————————————————————————————————————————————————————————————————
+async function testAutoplayMutedFallbackLifecycle() {
+  console.log('\n[Suite J] 浏览器 Autoplay 策略拦截与临时静音开播兜底');
+
+  const doc = new FakeElement('html');
+  const body = doc.append(new FakeElement('body'));
+
+  const { sandbox, timers, frameWindow } = createSandbox({
+    page: { documentElement: doc, body, video: null, state: { clicked: [] } },
+    storage: { autoNext: true }
+  });
+  const api = loadExtension(sandbox);
+  await runTimers(timers);
+
+  // 模拟换集后加载出新视频 B
+  const video = body.append(new FakeVideoElement({ duration: 600, id: 'v-autoplay' }));
+  video.ownerDocument = doc.ownerDocument;
+  video.src = 'https://example.com/video-b.mp4';
+  video.muted = false;
+  video.volume = 0.8;
+  video.readyState = 4;
+  video.paused = true;
+
+  let playAttempts = 0;
+  video.play = function () {
+    playAttempts += 1;
+    if (!this.muted) {
+      const err = new Error('play() failed because the user didn\'t interact with the document first.');
+      err.name = 'NotAllowedError';
+      return Promise.reject(err);
+    }
+    this.paused = false;
+    return Promise.resolve();
+  };
+
+  // 触发自动播放
+  const started = api.videoHandler.tryAutoPlay(video, '测试拦截');
+  check('tryAutoPlay 发起了播放调用', started === true);
+
+  // 等待 microtask 和 promise rejection 捕获
+  await runTimers(timers, { maxRounds: 5 });
+
+  const events = (sandbox.window.AutoNext && sandbox.window.AutoNext.getEvents) ? sandbox.window.AutoNext.getEvents() : [];
+  check('有声播放被拦截后自动降级为静音 (muted=true)', video.muted === true);
+  check('降级静音后成功启动播放 (paused=false)', video.paused === false);
+  check('记录了 AUTOPLAY_MUTED_FALLBACK 事件', events.some((e) => e.type === 'AUTOPLAY_MUTED_FALLBACK'));
+
+  // 模拟用户在页面任意位置点击，恢复声音
+  frameWindow.dispatchEvent(new FakeEvent('click'));
+
+  check('用户点击后恢复原音量与有声状态 (muted=false)', video.muted === false);
+  check('原始音量 volume 维持原样', Math.abs(video.volume - 0.8) <= 0.01);
+}
+
 async function runAll() {
   console.log('============================================================');
   console.log('video-auto-player 核心链路回归测试套件 (v1.2.3)');
@@ -407,6 +658,9 @@ async function runAll() {
   await testFormWrappedNextButton();
   await testWatchdogDoesNotRetriggerOnOldVideo();
   await testOldVideoPlayingDoesNotPrematurelyUnlock();
+  await testChaoxingCoursetreeNavigationAndJobIconIsolation();
+  await testNavigationConfirmationAndClickNoEffect();
+  await testAutoplayMutedFallbackLifecycle();
 
   console.log('============================================================');
   const failed = results.filter((r) => !r.ok);

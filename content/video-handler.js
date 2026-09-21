@@ -518,6 +518,79 @@
     return eligible;
   }
 
+  function handleMutedPlaySuccess(video, originalMuted, originalVolume) {
+    AutoNext.log('auto play muted fallback success', '已静音开播绕过浏览器限制');
+    if (AutoNext.addEvent) {
+      AutoNext.addEvent('AUTOPLAY_MUTED_FALLBACK', {
+        currentTime: Number(video.currentTime || 0).toFixed(1),
+        duration: Number(video.duration || 0).toFixed(1)
+      });
+    }
+    toast.show('已为您静音自动开播，点击任意处恢复声音', 'info', 5000);
+
+    const restoreAudio = () => {
+      if (typeof window.removeEventListener === 'function') {
+        window.removeEventListener('click', restoreAudio, true);
+        window.removeEventListener('keydown', restoreAudio, true);
+      }
+      if (!video || (typeof video.isConnected === 'boolean' && !video.isConnected)) return;
+      try {
+        video.muted = originalMuted;
+        if (typeof originalVolume === 'number') {
+          video.volume = originalVolume;
+        }
+        AutoNext.log('检测到用户交互，已恢复声音');
+        toast.show('已恢复声音', 'success', 2000);
+      } catch (e) {
+        AutoNext.debug('恢复音量异常：', e && e.message);
+      }
+    };
+
+    if (typeof window.addEventListener === 'function') {
+      window.addEventListener('click', restoreAudio, { capture: true, once: true });
+      window.addEventListener('keydown', restoreAudio, { capture: true, once: true });
+    }
+  }
+
+  function handlePlayRejection(video, err, rec) {
+    const isNotAllowed = err && (
+      err.name === 'NotAllowedError' ||
+      String(err.message || '').toLowerCase().includes('notallowed') ||
+      String(err.message || '').includes('user didn\'t interact')
+    );
+    AutoNext.warn('自动播放被浏览器拦截：', err && err.name, err && err.message);
+
+    if (!isNotAllowed || video.muted) {
+      toast.show('自动播放被拦截，稍后重试', 'warn');
+      return;
+    }
+
+    // 浏览器策略限制有声自动播放：临时静音重试，并在用户后续任意交互时恢复声音
+    AutoNext.warn('浏览器策略限制有声自动播放，尝试降级为静音开播');
+    const originalMuted = video.muted;
+    const originalVolume = video.volume;
+    video.muted = true;
+
+    try {
+      const retryPromise = video.play();
+      if (retryPromise && typeof retryPromise.then === 'function') {
+        retryPromise.then(() => {
+          handleMutedPlaySuccess(video, originalMuted, originalVolume);
+        }).catch((mutedErr) => {
+          video.muted = originalMuted;
+          AutoNext.warn('静音自动播放仍然被拦截：', mutedErr && mutedErr.name);
+          toast.show('自动播放被拦截，正在重试', 'warn');
+        });
+      } else {
+        handleMutedPlaySuccess(video, originalMuted, originalVolume);
+      }
+    } catch (syncErr) {
+      video.muted = originalMuted;
+      AutoNext.warn('静音重试调用失败：', syncErr && syncErr.message);
+      toast.show('自动播放被拦截，正在重试', 'warn');
+    }
+  }
+
   /**
    * 自动点播放。
    *
@@ -549,13 +622,12 @@
     try {
       result = video.play();
     } catch (err) {
-      AutoNext.warn('调用播放失败：', err && err.message);
+      handlePlayRejection(video, err, rec);
       return false;
     }
     if (result && typeof result.catch === 'function') {
       result.catch((err) => {
-        AutoNext.warn('自动播放被浏览器拦截，稍后会自动重试：', err && err.name);
-        toast.show('自动播放被拦截，正在重试', 'warn');
+        handlePlayRejection(video, err, rec);
       });
     }
     return true;
@@ -611,6 +683,10 @@
     navigated: false,
     /** 上一轮触发跳转的媒体源标识（用于杜绝旧视频 playing 提前解锁防重） */
     navigatedSource: '',
+    /** 是否正在等待页面/视频状态变化确认 */
+    awaitingConfirmation: false,
+    /** 本轮尝试中点击未生效的按钮集合，避免重复盲点 */
+    failedElements: new Set(),
     /** 上一次向父级 frame 发出协助请求的时间 */
     handoffAt: 0,
     /** 诊断用：发出了几次协助请求、投递到了几个 frame */
@@ -635,6 +711,8 @@
     cycle.attempts = 0;
     cycle.navigated = false;
     cycle.navigatedSource = '';
+    cycle.awaitingConfirmation = false;
+    cycle.failedElements = new Set();
     cycle.handoffAt = 0;
     cycle.handoffCount = 0;
     cycle.handoffDelivered = 0;
@@ -657,18 +735,179 @@
     return cycle.navigated || messenger.recentlyNavigated();
   }
 
+  /**
+   * 捕获当前页面与视频的关键状态快照（URL、目录激活项、当前视频源等）
+   */
+  function captureNavigationSnapshot() {
+    const activeTreeEl = document.querySelector(
+      '#coursetree .posCatalog_active, .course_tree .posCatalog_active, .posCatalog_box .posCatalog_active, ' +
+      '#coursetree .active, .posCatalog_active, ' +
+      '.tabtags .currents, .tabtags .active, [id^="dct"].currents, [id^="dct"].active, ' +
+      '.posCatalog_select_item.current'
+    );
+    const activeTreeId = activeTreeEl ? (activeTreeEl.id || activeTreeEl.getAttribute('id') || dom.textOf(activeTreeEl) || activeTreeEl.className) : '';
+    const currentVideo = state.active || (isVideoElement(document.querySelector('video')) ? document.querySelector('video') : null);
+    const videoSource = currentVideo ? sourceKeyOf(currentVideo) : '';
+    return {
+      href: location.href,
+      activeTreeEl,
+      activeTreeId,
+      video: currentVideo,
+      videoSource,
+      timestamp: Date.now()
+    };
+  }
+
+  /**
+   * 对比快照，判断页面是否“真实发生了前进/小节切换”
+   */
+  function checkNavigationConfirmed(snapshot) {
+    if (!snapshot) return false;
+
+    // a) 超星目录树激活项 / Tab 激活项发生改变（如 #coursetree .posCatalog_active 发生移动）
+    const currentActiveEl = document.querySelector(
+      '#coursetree .posCatalog_active, .course_tree .posCatalog_active, .posCatalog_box .posCatalog_active, ' +
+      '#coursetree .active, .posCatalog_active, ' +
+      '.tabtags .currents, .tabtags .active, [id^="dct"].currents, [id^="dct"].active, ' +
+      '.posCatalog_select_item.current'
+    );
+    if (currentActiveEl) {
+      if (!snapshot.activeTreeEl || currentActiveEl !== snapshot.activeTreeEl) {
+        return 'active-catalog-node-changed';
+      }
+      const currentActiveId = currentActiveEl.id || currentActiveEl.getAttribute('id') || dom.textOf(currentActiveEl) || currentActiveEl.className;
+      if (snapshot.activeTreeId && currentActiveId !== snapshot.activeTreeId) {
+        return 'active-catalog-node-changed';
+      }
+    } else if (snapshot.activeTreeEl) {
+      return 'active-catalog-node-cleared';
+    }
+
+    // b) 页面 location.href 发生变化
+    if (location.href !== snapshot.href) {
+      return 'location-href-changed';
+    }
+
+    // c) 视频 sourceKey / currentSrc 发生变化
+    const currentVideo = state.active || (isVideoElement(document.querySelector('video')) ? document.querySelector('video') : null);
+    if (currentVideo) {
+      const currentSrc = sourceKeyOf(currentVideo);
+      if (snapshot.videoSource && currentSrc && currentSrc !== snapshot.videoSource) {
+        return 'video-source-changed';
+      }
+    }
+
+    // d) 原视频被移除且新合规视频出现
+    if (snapshot.video && typeof snapshot.video.isConnected === 'boolean' && !snapshot.video.isConnected) {
+      if (currentVideo && currentVideo !== snapshot.video && isEligible(currentVideo)) {
+        return 'new-video-appeared';
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * 点击按钮并进入 1500~2500ms 短确认窗口：
+   * 严禁直接等同于跳转成功，只有在确认真实发生前进后才标记 cycle.navigated = true
+   */
+  function startNavigationConfirmation(buttonEl, reason, { onConfirm, onTimeout } = {}) {
+    const snapshot = captureNavigationSnapshot();
+    cycle.awaitingConfirmation = true;
+    const btnText = (dom && dom.ownTextOf ? dom.ownTextOf(buttonEl) : '') || buttonEl.textContent || buttonEl.tagName;
+    AutoNext.debug(`开始监听导航点击生效确认 (${reason}): 「${String(btnText).slice(0, 40)}」`);
+
+    try {
+      dom.click(buttonEl);
+    } catch (err) {
+      cycle.awaitingConfirmation = false;
+      AutoNext.warn('执行按钮点击异常：', err && err.message);
+      if (onTimeout) onTimeout();
+      return;
+    }
+
+    // 检查同步完成情况
+    const immediateConfirm = checkNavigationConfirmed(snapshot);
+    if (immediateConfirm) {
+      cycle.awaitingConfirmation = false;
+      cycle.navigated = true;
+      cycle.navigatedSource = snapshot.videoSource;
+      messenger.reportNavigated();
+      messenger.setBadge('→', '#16a34a');
+      toast.show('已跳转下一节', 'success');
+      if (AutoNext.addEvent) {
+        AutoNext.addEvent('NAVIGATED', { button: String(btnText).slice(0, 40), reason: immediateConfirm });
+      }
+      afterNavigation(`确认跳转成功(${immediateConfirm})`);
+      if (onConfirm) onConfirm(immediateConfirm);
+      return;
+    }
+
+    // 进入 2000ms 短确认窗口，每 250ms 轮询一次
+    const CONFIRM_TIMEOUT_MS = 2000;
+    const CONFIRM_POLL_INTERVAL_MS = 250;
+    const startedAt = Date.now();
+
+    function poll() {
+      if (!cycle.awaitingConfirmation) return;
+      const confirmed = checkNavigationConfirmed(snapshot);
+      if (confirmed) {
+        cycle.awaitingConfirmation = false;
+        cycle.navigated = true;
+        cycle.navigatedSource = snapshot.videoSource;
+        messenger.reportNavigated();
+        messenger.setBadge('→', '#16a34a');
+        toast.show('已跳转下一节', 'success');
+        if (AutoNext.addEvent) {
+          AutoNext.addEvent('NAVIGATED', { button: String(btnText).slice(0, 40), reason: confirmed });
+        }
+        afterNavigation(`确认跳转成功(${confirmed})`);
+        if (onConfirm) onConfirm(confirmed);
+        return;
+      }
+
+      if (Date.now() - startedAt >= CONFIRM_TIMEOUT_MS) {
+        cycle.awaitingConfirmation = false;
+        AutoNext.warn(`点击「${String(btnText).slice(0, 40)}」在 ${CONFIRM_TIMEOUT_MS}ms 内未检测到页面或视频状态变化，判定为未生效 (CLICK_NO_EFFECT)`);
+        if (AutoNext.addEvent) {
+          AutoNext.addEvent('CLICK_NO_EFFECT', { button: String(btnText).slice(0, 40), reason });
+        }
+        if (onTimeout) onTimeout();
+        return;
+      }
+
+      schedule(poll, CONFIRM_POLL_INTERVAL_MS);
+    }
+
+    schedule(poll, CONFIRM_POLL_INTERVAL_MS);
+  }
+
   function findButtonAndClick() {
     const customSel = AutoNext.settings ? AutoNext.settings.customNextSelector : '';
-    const btn = AutoNext.buttonFinder.clickNextButton(40, customSel);
+    const btn = AutoNext.buttonFinder.findNextButton(40, customSel, cycle.failedElements);
     if (!btn) return false;
-    cycle.navigated = true;
-    messenger.reportNavigated(); // 只有真的点下去了才广播，别的 frame 才不会重复点
-    messenger.setBadge('→', '#16a34a'); // 图标上显示"已跳转"
-    toast.show('已跳转下一节', 'success');
-    if (AutoNext.addEvent) {
-      const btnText = (dom && dom.ownTextOf ? dom.ownTextOf(btn) : '') || btn.textContent || btn.tagName;
-      AutoNext.addEvent('NAVIGATED', { button: String(btnText).slice(0, 40) });
-    }
+
+    AutoNext.log('next lesson found', btn.text || '(无文字)', `score=${btn.score}`, btn.reason);
+    AutoNext.log('navigating to next lesson', `→ 点击「${btn.text || btn.el.tagName}」`);
+
+    startNavigationConfirmation(btn.el, btn.reason || '本地按钮', {
+      onConfirm: (confirmReason) => {
+        AutoNext.log('跳转确认成功：' + confirmReason);
+      },
+      onTimeout: () => {
+        if (!cycle.failedElements) cycle.failedElements = new Set();
+        cycle.failedElements.add(btn.el);
+        cycle.attempts += 1;
+        if (cycle.attempts < MAX_NEXT_ATTEMPTS) {
+          AutoNext.warn(`按钮点击未生效，安排第 ${cycle.attempts + 1} 次重试`);
+          schedule(attemptNext, 500);
+        } else {
+          AutoNext.warn('多次尝试后仍未成功跳转下一节，流程已停止');
+          toast.show('下一节跳转未生效，已停止', 'warn');
+          cycle.running = false;
+        }
+      }
+    });
     return true;
   }
 
@@ -748,6 +987,11 @@
       return;
     }
 
+    if (cycle.awaitingConfirmation) {
+      AutoNext.debug('上一轮点击正在等待生效确认，跳过重复尝试');
+      return;
+    }
+
     if (messenger.recentlyNavigated()) {
       AutoNext.debug('其他 frame 已完成跳转，本次跳过');
       finishCycle();
@@ -755,7 +999,7 @@
     }
 
     if (findButtonAndClick()) {
-      finishCycle();
+      // 正在等待确认，不立即进入 finishCycle
       return;
     }
     cycle.attempts += 1;
@@ -831,7 +1075,7 @@
       AutoNext.addEvent('NAVIGATION_TRIGGERED', { reason: reason || '' });
     }
 
-    schedule(attemptNext, 800);
+    schedule(attemptNext, 1200);
   }
 
   /**
@@ -1006,6 +1250,9 @@
     markDetected,
     notifyManualNavigation,
     afterNavigation,
+    startNavigationConfirmation,
+    captureNavigationSnapshot,
+    checkNavigationConfirmed,
     resetCycle: () => resetCycle({ keepSource: false }),
     configure(opts) {
       options = { ...options, ...opts };

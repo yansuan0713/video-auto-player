@@ -56,14 +56,35 @@ function buildLessonPage({ withNav = true, style = 'chaoxing' } = {}) {
       const prev = nav.append(new FakeElement('a', { class: 'prev_next prev', text: '上一节', id: 'prevNextFocusPrev' }));
       prev.addEventListener('click', () => state.clicked.push('prev'));
       const next = nav.append(new FakeElement('a', { class: 'prev_next next', text: '下一节', id: 'prevNextFocusNext' }));
-      next.addEventListener('click', () => state.clicked.push('next'));
+      next.addEventListener('click', () => {
+        state.clicked.push('next');
+        if (state.simulateNavigation !== false) {
+          const cur = documentElement.querySelector('.posCatalog_select_item.current, .posCatalog_active');
+          if (cur) {
+            cur.classList.remove('current');
+            cur.classList.remove('posCatalog_active');
+            const nextItem = cur.nextElementSibling;
+            if (nextItem && nextItem.classList.contains('posCatalog_select_item')) {
+              nextItem.classList.add('current');
+            }
+          }
+        }
+      });
     } else {
       // 改版后的页面：class 全变了，只剩文字
       const bar = body.append(new FakeElement('div', { class: 'v2-toolbar' }));
       const prev = bar.append(new FakeElement('button', { class: 'btn-plain', text: '上一节', id: 'goPrev' }));
       prev.addEventListener('click', () => state.clicked.push('prev'));
       const next = bar.append(new FakeElement('button', { class: 'btn-plain', text: '下一节', id: 'goNext' }));
-      next.addEventListener('click', () => state.clicked.push('next'));
+      next.addEventListener('click', () => {
+        state.clicked.push('next');
+        if (state.simulateNavigation !== false) {
+          state.navigated = true;
+          if (video && video.src) {
+            video.src = video.src + '?next=1';
+          }
+        }
+      });
       const hidden = bar.append(new FakeElement('button', { class: 'btn-plain', text: '下一节', style: { display: 'none' } }));
       hidden.addEventListener('click', () => state.clicked.push('hidden-next'));
     }
@@ -93,6 +114,11 @@ function createSandbox({ page, storage = {}, isTop = true, logSink = [], parentW
       if (!document._listeners) document._listeners = new Map();
       if (!document._listeners.has(type)) document._listeners.set(type, []);
       document._listeners.get(type).push(fn);
+    },
+    removeEventListener: (type, fn) => {
+      if (!document._listeners || !document._listeners.has(type)) return;
+      const list = document._listeners.get(type).filter((f) => f !== fn);
+      document._listeners.set(type, list);
     },
     dispatchEvent: (event) => {
       ((document._listeners && document._listeners.get(event.type)) || []).forEach((fn) => fn(event));
@@ -126,6 +152,11 @@ function createSandbox({ page, storage = {}, isTop = true, logSink = [], parentW
     if (!hostWindow._listeners.has(type)) hostWindow._listeners.set(type, []);
     hostWindow._listeners.get(type).push(fn);
   };
+  hostWindow.removeEventListener = (type, fn) => {
+    if (!hostWindow._listeners || !hostWindow._listeners.has(type)) return;
+    const list = hostWindow._listeners.get(type).filter((f) => f !== fn);
+    hostWindow._listeners.set(type, list);
+  };
 
   // frameWindow：**在 vm realm 内部**的 window 对象，content script 实际操作的就是它。
   // 每个 frame 用独立沙箱加载模块，与浏览器里“每个 frame 各自注入一份”一致。
@@ -145,6 +176,11 @@ function createSandbox({ page, storage = {}, isTop = true, logSink = [], parentW
       if (!frameWindow._listeners) frameWindow._listeners = new Map();
       if (!frameWindow._listeners.has(type)) frameWindow._listeners.set(type, []);
       frameWindow._listeners.get(type).push(fn);
+    },
+    removeEventListener: (type, fn) => {
+      if (!frameWindow._listeners || !frameWindow._listeners.has(type)) return;
+      const list = frameWindow._listeners.get(type).filter((f) => f !== fn);
+      frameWindow._listeners.set(type, list);
     },
     dispatchEvent: (event) => {
       ((frameWindow._listeners && frameWindow._listeners.get(event.type)) || []).forEach((fn) => fn(event));

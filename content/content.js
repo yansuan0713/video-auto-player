@@ -103,15 +103,19 @@
     }
     AutoNext.log('next lesson found', found.text || '(无文字)', `score=${found.score}`, '[来自其他 frame 的请求]');
     AutoNext.log('navigating to next lesson', `→ 点击「${found.text || found.el.tagName}」`);
-    dom.click(found.el);
-    messenger.setBadge('→', '#16a34a');
-    messenger.reportNavigated();
-    if (videoHandler && typeof videoHandler.afterNavigation === 'function') {
-      videoHandler.afterNavigation('代客点击下一节');
+    if (videoHandler && typeof videoHandler.startNavigationConfirmation === 'function') {
+      videoHandler.startNavigationConfirmation(found.el, '[来自其他 frame 的请求]');
     } else {
-      videoHandler.resetCycle();
+      dom.click(found.el);
+      messenger.setBadge('→', '#16a34a');
+      messenger.reportNavigated();
+      if (videoHandler && typeof videoHandler.afterNavigation === 'function') {
+        videoHandler.afterNavigation('代客点击下一节');
+      } else {
+        videoHandler.resetCycle();
+      }
+      toast.show('已跳转下一节', 'success');
     }
-    toast.show('已跳转下一节', 'success');
     return true;
   }
 
