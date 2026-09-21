@@ -182,6 +182,10 @@ class FakeElement {
   append(child) { return this.appendChild(child); }
   appendChild(child) {
     child.parentElement = this;
+    if (this.ownerDocument && !child.ownerDocument) {
+      child.ownerDocument = this.ownerDocument;
+      child.walk((node) => { node.ownerDocument = this.ownerDocument; });
+    }
     this.children.push(child);
     return child;
   }
@@ -221,6 +225,16 @@ class FakeElement {
     event.target = this;
     if (event.type === 'ratechange') this.rateChangeCount += 1;
     (this.listeners.get(event.type) || []).forEach((fn) => fn(event));
+    if (event.bubbles !== false) {
+      let p = this.parentElement;
+      while (p) {
+        ((p.listeners && p.listeners.get(event.type)) || []).forEach((fn) => fn(event));
+        p = p.parentElement;
+      }
+      if (this.ownerDocument && typeof this.ownerDocument.dispatchEvent === 'function') {
+        this.ownerDocument.dispatchEvent(event);
+      }
+    }
     return true;
   }
   click() { this.dispatchEvent(new FakeEvent('click')); }

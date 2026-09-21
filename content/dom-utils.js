@@ -86,15 +86,15 @@
       return false;
     },
 
-    /**
-     * 模拟一次真实点击。
-     * 学习通部分按钮是 Vue/React 绑定的，需要完整的事件序列才会触发。
-     */
     /** 判断当前是否正在执行插件自身派发的点击事件（用于事件监听器区分插件操作与用户真实点击） */
     isInternalClicking() {
       return internalClickDepth > 0;
     },
 
+    /**
+     * 模拟一次真实点击。
+     * 学习通部分按钮是 Vue/React 绑定的，需要完整的事件序列才会触发。
+     */
     click(el) {
       internalClickDepth += 1;
       try {

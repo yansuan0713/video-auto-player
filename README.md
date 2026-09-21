@@ -63,7 +63,7 @@
 │   ├── fake-dom.js            # 测试用轻量 DOM 桩（支持 open/closed Shadow DOM、组合选择器与伪类）
 │   ├── run-tests.js           # 内容脚本回归测试套件（117 项）
 │   ├── popup-tests.js         # 弹窗面板交互与 CSP 安全测试（50 项）
-│   └── v12-features-tests.js  # v1.2 特性与同章节多任务点全量测试套件（144 项）
+│   └── v12-features-tests.js  # v1.2 特性与同章节多任务点全量测试套件（150 项）
 ├── .github/workflows/test.yml # GitHub Actions 持续集成自动化工作流
 ├── package.json               # 自动化测试脚本与项目描述
 └── README.md
@@ -95,13 +95,13 @@ __AUTO_NEXT__.trySkip()        // 手动检查是否需要跳过无视频页面
 项目附带完整的 Node.js 测试套件，无需启动真实浏览器即可全真模拟 DOM 运行环境：
 
 ```bash
-# 执行全部 311 项测试
+# 执行全部 317 项测试
 npm test
 
 # 分别执行各子套件
 npm run test:content  # 117 项 content script 行为测试
 npm run test:popup    # 50 项 popup 面板与 CSP 测试
-npm run test:v12      # 144 项 v1.2.x 进阶特性与多任务点加固断言
+npm run test:v12      # 150 项 v1.2.x 进阶特性与多任务点加固断言
 ```
 
 ## 权限说明
@@ -117,19 +117,20 @@ npm run test:v12      # 144 项 v1.2.x 进阶特性与多任务点加固断言
 ## 更新日志
 
 ### v1.2.2 (2026-09-21)
-- **修复（内部点击防误判）**：在 `dom-utils.js` 中新增 `isInternalClicking` 执行深度计数，杜绝跨 frame 远程代点或其他插件内部派发的点击冒泡触发 `watchUserNavigation` 产生的假“手动点击”日志和多余静默期。
-- **完善（交接回音检查静默期保护）**：在 `checkHandoffResult` 重试流程中补齐 `manualNavGraceUntil` 检查，彻底杜绝交接等待超时与手动导航并发时的边界重复跳节。
-- **清理（死代码清理与配置迁移同步）**：彻底清除 `button-finder.js` 中的未引用 `selectorCache`；同步 `background.js` 的 `DEFAULTS` 与 `migrateSettings`（补齐 `customNextSelector` 与 `Array.isArray(siteSettings)` 校验），消除跨端配置漂移。
+- **双击修复（DOM 单击事件去重）**：修复 `dom.click(el)` 派发手势事件后又调用原生 `click()` 导致的 click 事件被触发两遍的问题，优先调用原生 `el.click()`，单次操作精准派发 1 次 click，彻底避免按钮或计数组件重复响应。
+- **手动导航静默期（防跳两节与并发保护）**：
+  - 将手动导航静默保护重构为绝对时间戳窗口（`manualNavGraceUntil`），在 `triggerNextLesson` 与 `watchdog` 轮询中统一生效拦截，防止用户手动点击后旧视频再次误触发自动跳转跳两节；
+  - 在 `dom-utils.js` 中新增 `isInternalClicking` 执行深度计数，杜绝跨 frame 远程代点或其他插件内部派发的点击冒泡触发 `watchUserNavigation` 产生的假“手动点击”日志和多余静默期；
+  - 在 `checkHandoffResult` 重试流程中补齐 `manualNavGraceUntil` 检查，彻底杜绝交接等待超时与手动导航并发时的边界重复跳节。
+- **权限精简（彻底移除 webNavigation）**：彻底移除冗余的 `webNavigation` 敏感权限，弹窗探测改为 `chrome.scripting.executeScript({ target: { allFrames: true } })`，减少商店审核风险与用户权限警告。
+- **版本与配置对齐（双端漂移消除）**：彻底清除 `button-finder.js` 中的未引用 `selectorCache` 死代码；全面对齐 `background.js`、`popup.js`、`settings.js` 的 `DEFAULTS`（补齐 `customNextSelector: ''`）与 `migrateSettings`（补齐 `Array.isArray(siteSettings)` 校验），消除跨端配置漂移。
 
 ### v1.2.1 (2026-09-21)
-- **修复（DOM 点击双重触发）**：修复 `dom.click(el)` 派发手势事件后又调用原生 `click()` 导致的 click 事件被触发两遍的问题，确保单次操作精准派发 1 次 click，彻底避免按钮或计数组件重复响应。
-- **修复（手动导航静默期失效）**：将手动导航静默保护改为绝对时间戳窗口（`manualNavGraceUntil`），在 `triggerNextLesson` 与 `watchdog` 轮询中统一生效拦截，防止用户手动点击后旧视频再次误触发自动跳转跳两节。
-- **优化（权限瘦身）**：彻底移除冗余的 `webNavigation` 权限，弹窗探测改为 `chrome.scripting.executeScript({ target: { allFrames: true } })`，减少商店审核风险与用户权限警告。
-- **增强（自定义选择器实时生效）**：在 `settings.js` 中新增全局 `customNextSelector` 默认值与变更响应，并重构基于 `resolveEffective` 的配置重算逻辑，确保站点规则覆盖在全局变更时不被破坏。
 - **修复（多任务点识别）**：新增超星等平台同章节多任务点 Tab（`[id^="dct"]`、`.tabtags` 及未完成任务点图标）高权重识别规则，解决多视频同页播放完毕后停滞不跳转的问题。
 - **修复（反向词误伤）**：重构测验/考试反向词过滤逻辑。引入 `isForwardNav`，智能放行通往“章节测验 / 单元测试”小节的合法“下一节”按钮；同时对测验页面内部的“提交测验 / 交卷 / 开始答题”及 submit 表单保持严格排除。
 - **优化（跨 Frame 消息机制）**：修复 `frame-messenger.js` 在向相邻 frame 请求查找下一节时的回环弹跳，发送前标记本 frame 消息已记录，杜绝无效重试与报错。
 - **增强（目录树兜底）**：补充章节目录树相邻小节（`.posCatalog_select + li/div`）选择器，在独立下一节按钮隐藏或改版时自动接管。
+- **增强（自定义选择器实时生效）**：在 `settings.js` 中新增全局 `customNextSelector` 默认值与变更响应，并重构基于 `resolveEffective` 的配置重算逻辑，确保站点规则覆盖在全局变更时不被破坏。
 
 ### v1.2.0 (2026-09-20)
 - **新增（自定义播放速率）**：支持 0.1x ~ 16.0x 任意倍速，增加 1.0x ~ 3.0x 快捷选档与输入框，增强平台限制检测与防互抢机制。

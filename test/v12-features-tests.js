@@ -1096,7 +1096,7 @@ async function testClickDeduplicationAndGrace() {
     check('popup.js 中绝无 chrome.webNavigation 遗留调用', !popupCode.includes('chrome.webNavigation'));
   }
 
-  // 12.6 内部派发点击不会被 watchUserNavigation 误判为手动操作
+  // 12.6 isInternalClicking 状态追踪与防误判门控
   {
     const doc = new FakeElement('html');
     const body = doc.append(new FakeElement('body'));
@@ -1109,11 +1109,28 @@ async function testClickDeduplicationAndGrace() {
     loadExtension(sandbox);
     await runTimers(timers);
 
-    const prevGrace = sandbox.window.AutoNext.videoHandler.stats().cycle.manualNavGraceUntil;
-    sandbox.window.AutoNext.dom.click(nextBtn);
-    const postGrace = sandbox.window.AutoNext.videoHandler.stats().cycle.manualNavGraceUntil;
+    const dom = sandbox.window.AutoNext.dom;
+    const vh = sandbox.window.AutoNext.videoHandler;
 
-    check('插件内部点击不会激活手动静默保护期（防误判）', prevGrace === postGrace, `prev=${prevGrace} post=${postGrace}`);
+    check('isInternalClicking 初始状态为 false', dom.isInternalClicking() === false);
+
+    let observedDuringClick = null;
+    nextBtn.addEventListener('click', () => {
+      observedDuringClick = dom.isInternalClicking();
+    });
+
+    const prevGrace = vh.stats().cycle.manualNavGraceUntil;
+    dom.click(nextBtn);
+    const postInternalGrace = vh.stats().cycle.manualNavGraceUntil;
+
+    check('dom.click 执行期间 isInternalClicking 深度追踪为 true', observedDuringClick === true);
+    check('dom.click 执行结束后 isInternalClicking 恢复为 false', dom.isInternalClicking() === false);
+    check('插件内部点击不会激活手动静默保护期（防误判）', prevGrace === postInternalGrace, `prev=${prevGrace} post=${postInternalGrace}`);
+
+    // 用户真实点击触发原生事件冒泡
+    nextBtn.dispatchEvent(new FakeEvent('click', { bubbles: true }));
+    const postUserGrace = vh.stats().cycle.manualNavGraceUntil;
+    check('用户真实点击能够正常激活手动导航静默保护期', postUserGrace > (prevGrace || 0), `post=${postUserGrace}`);
   }
 
   // 12.7 checkHandoffResult 在手动导航静默期内放弃重试
@@ -1121,15 +1138,33 @@ async function testClickDeduplicationAndGrace() {
     const doc = new FakeElement('html');
     const body = doc.append(new FakeElement('body'));
     const video = body.append(new FakeVideoElement({ duration: 600 }));
+    const parentWin = { postMessage: () => {} };
+
     const { sandbox, timers } = createSandbox({
       page: { documentElement: doc, body, video },
       storage: { autoNext: true }
     });
+    sandbox.window.parent = parentWin;
+    sandbox.window.top = parentWin;
     loadExtension(sandbox);
     await runTimers(timers);
 
+    video.watch(30);
+    video.finish();
+    await runTimers(timers, { maxRounds: 2 });
+
+    const statsAfterEnded = sandbox.window.AutoNext.videoHandler.stats();
+    check('子 frame 无按钮播完后启动交接且等待回音', statsAfterEnded.cycle.handoffCount === 1);
+
+    // 在 2500ms 交接检查到期前，模拟用户手动点击导航，触发 3000ms 静默保护期
     sandbox.window.AutoNext.videoHandler.notifyManualNavigation(3000);
-    check('处于手动导航静默期时交接回音检查不重新启动跳转循环', !sandbox.window.AutoNext.videoHandler.stats().cycle.running);
+
+    // 运行并消耗后续所有定时器（包含 2500ms 的 checkHandoffResult 定时器）
+    await runTimers(timers, { maxRounds: 5 });
+
+    const statsAfterTimer = sandbox.window.AutoNext.videoHandler.stats();
+    check('处于手动导航静默期时交接回音检查放弃重试 (handoffCount 未增加)', statsAfterTimer.cycle.handoffCount === 1);
+    check('处于手动导航静默期时跳转循环保持停止 (!cycle.running)', !statsAfterTimer.cycle.running);
   }
 
   // 12.8 消除 selectorCache 死代码与 background migrateSettings 校验同步
