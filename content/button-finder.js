@@ -18,14 +18,36 @@
 
   /** 第一层：常见选择器候选（越靠前越可信） */
   const SELECTORS = [
-    // —— 超星学习通常见结构（由具体到通用，全部允许失效）——
+    // —— 超星同章节多任务点 (Tab 选项卡与卡片，必须优先于跨章节跳转) ——
+    ['[id^="dct"].currents + [id^="dct"]', 200],
+    ['[id^="dct"].active + [id^="dct"]', 200],
+    ['.tabtags .currents + span', 200],
+    ['.tabtags .active + span', 200],
+    ['.tabtags .currents + li', 200],
+    ['.tabtags .active + li', 200],
+    ['.tabtags .currents + a', 200],
+    ['.tabtags .active + a', 200],
+    ['.tabtags span.currents ~ span:not(.currents):not(.active)', 190],
+    ['.tabtags li.currents ~ li:not(.currents):not(.active)', 190],
+    ['[id^="dct"].currents ~ [id^="dct"]:not(.currents):not(.active)', 190],
+    ['.ans-job-icon:not(.ans-job-finished)', 190],
+
+    // —— 超星学习通常见跨章节结构（由具体到通用） ——
     ['#prevNextFocusNext', 100],
     ['#nextBtn', 96],
-    ['.posCatalog_select .prev_next.next', 90],
     ['.prev_next.next', 88],
     ['a[onclick*="getTeacherAjax"][onclick*="next"]', 86],
     ['#prevNextNext', 86],
-    // —— 通用命名（class / id / 属性里带 next 的控件）——
+
+    // —— 目录树下一个小节（当独立下一节按钮隐藏/改版时兜底） ——
+    ['.posCatalog_select + li a', 85],
+    ['.posCatalog_select + li .posCatalog_name', 85],
+    ['.posCatalog_select + div a', 85],
+    ['.posCatalog_select + div .posCatalog_name', 85],
+    ['.posCatalog_select ~ li:not(.posCatalog_select) a', 82],
+    ['.posCatalog_select ~ div:not(.posCatalog_select) a', 82],
+
+    // —— 通用命名（class / id / 属性里带 next 的控件） ——
     ['[data-action="next"]', 84],
     ['[data-role="next"]', 84],
     ['[data-testid="next"]', 82],
@@ -60,11 +82,25 @@
     { value: 'next', exact: 46, startsWith: 38, includes: 26 }
   ];
 
-  /** 反向词：命中则重罚，避免把“上一节 / 返回目录 / 下一章练习”当成导航 */
-  const NEGATIVE = [
+  /** 严格反向与提交词：出现即一票否决（无论是否带“下一”） */
+  const STRICT_NEGATIVE = [
     '上一节', '上一章', '上一个', '上一页', '返回', 'back', 'prev', 'previous', 'replay', '重播', '重看',
-    '提交', '交卷', '答题', '测验', '考试', 'submit', 'quiz', 'exam'
+    '提交', '交卷', '交作业', '交答卷', '提交测验', '提交考试', '提交作业', '提交答案', '提交答题',
+    '开始答题', '开始测验', '开始考试', '查看分数', '确认提交', 'submit', 'handin'
   ];
+
+  /** 测验/试卷类词汇：仅当元素不具备明确前进语义时予以排除（防止误点测验内部控件，但放行“下一节：章节测验”） */
+  const QUIZ_WORDS = ['测验', '考试', 'quiz', 'exam', '答题'];
+
+  /** 前进方向语义词 */
+  const FORWARD_WORDS = [
+    '下一节', '下一章', '下一个', '下一任务点', '下一课', '下一讲', '下一集', '下一视频', 'next'
+  ];
+
+  function isForwardNav(text) {
+    const lower = String(text || '').toLowerCase();
+    return FORWARD_WORDS.some((word) => lower.includes(word));
+  }
 
   const TEXT_LIMIT = 60; // 文本太长基本是容器，不是按钮
 
@@ -125,8 +161,17 @@
   }
 
   function hasNegative(text) {
-    const lower = String(text).toLowerCase();
-    return NEGATIVE.some((word) => lower.includes(word));
+    const lower = String(text || '').toLowerCase();
+    if (STRICT_NEGATIVE.some((word) => lower.includes(word))) {
+      return true;
+    }
+    // 包含测验/考试/答题词汇时：
+    // 若同时包含明确的前进导航词（如“下一节：章节测验”、“下一章 单元测试”），说明是通向下节测验的合法导航，不予拦截；
+    // 反之，若不含前进词（如“测验”、“随堂测试”、“答题”），则属于测验界面内控件，坚决排除。
+    if (QUIZ_WORDS.some((word) => lower.includes(word))) {
+      return !isForwardNav(lower);
+    }
+    return false;
   }
 
   /** 向上找最近的可点击祖先，避免选到内层 span / i 图标 */

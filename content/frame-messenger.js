@@ -77,11 +77,13 @@
    */
   function notifyUp(type, id) {
     let delivered = 0;
+    const msgId = id || `m${(msgSeq += 1)}`;
+    markSeen(msgId);
     if (!messenger.isTop) {
-      if (send(window.parent, type, id)) delivered += 1;
+      if (send(window.parent, type, msgId)) delivered += 1;
     }
     for (const frame of childFrames()) {
-      if (send(frame, type, id)) delivered += 1;
+      if (send(frame, type, msgId)) delivered += 1;
     }
     return delivered;
   }
@@ -122,7 +124,9 @@
      */
     requestHelp() {
       stats.requested += 1;
-      const delivered = notifyUp(TYPES.VIDEO);
+      const ownId = `m${(msgSeq += 1)}`;
+      markSeen(ownId);
+      const delivered = notifyUp(TYPES.VIDEO, ownId);
       AutoNext.warn('已请求其他 frame 帮忙找“下一节”', `投递到 ${delivered} 个相邻 frame`,
         `（本 frame ${messenger.isTop ? '是顶层' : '不是顶层'}，直接子 frame ${childFrames().length} 个）`);
       return delivered;

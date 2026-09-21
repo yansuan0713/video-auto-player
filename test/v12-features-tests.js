@@ -837,6 +837,139 @@ async function testEnableDisableLifecycle() {
 }
 
 // ————————————————————————————————————————————————————————————————
+// [Suite 11] 超星同章节多任务点与测验导航防误杀加固
+// ————————————————————————————————————————————————————————————————
+async function testMultiTaskAndQuizNav() {
+  console.log('\n[Suite 11] 超星同章节多任务点与测验导航防误杀加固');
+
+  // 11.1 同一章节存在多任务点 Tab 时，优先点击下一任务点 Tab（而非直接跨章节跳转）
+  {
+    const doc = new FakeElement('html');
+    const body = doc.append(new FakeElement('body'));
+    const video = body.append(new FakeVideoElement({ duration: 600 }));
+    const clicked = [];
+
+    // 选项卡栏：当前在任务点 1 (dct1)，紧邻任务点 2 (dct2)
+    const tabbar = body.append(new FakeElement('div', { class: 'tabtags' }));
+    const tab1 = tabbar.append(new FakeElement('span', { id: 'dct1', class: 'currents', text: '视频1' }));
+    const tab2 = tabbar.append(new FakeElement('span', { id: 'dct2', text: '视频2' }));
+    tab2.addEventListener('click', () => clicked.push('tab2-next-task'));
+
+    // 跨章节全局下一节按钮
+    const nextChapter = body.append(new FakeElement('a', { id: 'prevNextFocusNext', class: 'prev_next next', text: '下一节' }));
+    nextChapter.addEventListener('click', () => clicked.push('next-chapter-btn'));
+
+    const { sandbox, timers } = createSandbox({
+      page: { documentElement: doc, body, video, state: { clicked } },
+      storage: { autoNext: true }
+    });
+    loadExtension(sandbox);
+    await runTimers(timers);
+
+    video.watch(30);
+    video.finish();
+    await runTimers(timers);
+
+    check('同章节内优先切换至下一个未完成任务点 Tab', clicked.includes('tab2-next-task'), JSON.stringify(clicked));
+    check('任务点未完成前不越级点击跨章节下一节按钮', !clicked.includes('next-chapter-btn'), JSON.stringify(clicked));
+  }
+
+  // 11.2 下一小节为测验/考试时，包含测验标题的“下一节”按钮不被误判排除
+  {
+    const doc = new FakeElement('html');
+    const body = doc.append(new FakeElement('body'));
+    const video = body.append(new FakeVideoElement({ duration: 600 }));
+    const clicked = [];
+
+    // 超星常见：下一节是测验，title 标注为“下一节：第一章 章节测验”
+    const nav = body.append(new FakeElement('div', { class: 'prev_next' }));
+    const nextQuizBtn = nav.append(new FakeElement('a', {
+      id: 'prevNextFocusNext',
+      class: 'prev_next next',
+      attrs: { title: '下一节：第1章章节测验' },
+      text: '下一节'
+    }));
+    nextQuizBtn.addEventListener('click', () => clicked.push('next-to-quiz-section'));
+
+    const { sandbox, timers } = createSandbox({
+      page: { documentElement: doc, body, video, state: { clicked } },
+      storage: { autoNext: true }
+    });
+    loadExtension(sandbox);
+    await runTimers(timers);
+
+    video.watch(30);
+    video.finish();
+    await runTimers(timers);
+
+    check('通往测验小节的“下一节”按钮正常被识别并点击', clicked.includes('next-to-quiz-section'), JSON.stringify(clicked));
+  }
+
+  // 11.3 测验界面内部的提交、交卷、答题控件仍坚决排除
+  {
+    const doc = new FakeElement('html');
+    const body = doc.append(new FakeElement('body'));
+    const video = body.append(new FakeVideoElement({ duration: 600 }));
+    const clicked = [];
+
+    const submitBtn = body.append(new FakeElement('button', { id: 'submit-quiz', text: '提交测验' }));
+    submitBtn.addEventListener('click', () => clicked.push('submit-quiz'));
+
+    const handinBtn = body.append(new FakeElement('button', { id: 'handin-paper', text: '交卷' }));
+    handinBtn.addEventListener('click', () => clicked.push('handin-paper'));
+
+    const startQuizBtn = body.append(new FakeElement('button', { id: 'start-quiz', text: '开始答题' }));
+    startQuizBtn.addEventListener('click', () => clicked.push('start-quiz'));
+
+    const realNext = body.append(new FakeElement('button', { id: 'real-next-link', class: 'next-btn', text: '下一节' }));
+    realNext.addEventListener('click', () => clicked.push('real-next-link'));
+
+    const { sandbox, timers } = createSandbox({
+      page: { documentElement: doc, body, video, state: { clicked } },
+      storage: { autoNext: true }
+    });
+    loadExtension(sandbox);
+    await runTimers(timers);
+
+    video.watch(30);
+    video.finish();
+    await runTimers(timers);
+
+    check('测验“提交测验”控件被严格排除', !clicked.includes('submit-quiz'));
+    check('测验“交卷”控件被严格排除', !clicked.includes('handin-paper'));
+    check('测验“开始答题”控件被严格排除', !clicked.includes('start-quiz'));
+    check('排除提交控件后成功命中真实“下一节”', clicked.includes('real-next-link'));
+  }
+
+  // 11.4 目录树兄弟小节兜底导航
+  {
+    const doc = new FakeElement('html');
+    const body = doc.append(new FakeElement('body'));
+    const video = body.append(new FakeVideoElement({ duration: 600 }));
+    const clicked = [];
+
+    const catalog = body.append(new FakeElement('ul', { class: 'posCatalog_level' }));
+    catalog.append(new FakeElement('li', { class: 'posCatalog_select', text: '1.1 绪论' }));
+    const nextLi = catalog.append(new FakeElement('li', { class: 'posCatalog_item' }));
+    const nextLink = nextLi.append(new FakeElement('a', { class: 'posCatalog_name', text: '1.2 导数概念' }));
+    nextLink.addEventListener('click', () => clicked.push('catalog-next-lesson'));
+
+    const { sandbox, timers } = createSandbox({
+      page: { documentElement: doc, body, video, state: { clicked } },
+      storage: { autoNext: true }
+    });
+    loadExtension(sandbox);
+    await runTimers(timers);
+
+    video.watch(30);
+    video.finish();
+    await runTimers(timers);
+
+    check('无独立下一节按钮时由目录树下一个兄弟章节兜底点击', clicked.includes('catalog-next-lesson'), JSON.stringify(clicked));
+  }
+}
+
+// ————————————————————————————————————————————————————————————————
 // 主执行器
 // ————————————————————————————————————————————————————————————————
 (async () => {
@@ -853,6 +986,7 @@ async function testEnableDisableLifecycle() {
   await testSpaNavigation();
   await testPopupAndCspCompliance();
   await testEnableDisableLifecycle();
+  await testMultiTaskAndQuizNav();
 
   const failed = results.filter((r) => !r.ok);
   console.log('\n' + '='.repeat(60));

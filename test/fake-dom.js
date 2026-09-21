@@ -8,8 +8,20 @@
 
 /** 只实现插件真正用到的那几种选择器形态，因此不依赖 jsdom */
 function matchCompound(el, compound) {
-  const attrRe = /\[([a-zA-Z-]+)(?:([*^$]?=)"?([^\]"]*)"?)?\]/g;
+  if (!el || !el.tagName) return false;
   let rest = compound;
+
+  // 处理 :not(...)
+  const notMatches = [];
+  rest = rest.replace(/:not\(([^)]+)\)/g, (m, inner) => {
+    notMatches.push(inner);
+    return '';
+  });
+  for (const inner of notMatches) {
+    if (matches(el, inner)) return false;
+  }
+
+  const attrRe = /\[([a-zA-Z-]+)(?:([*^$]?=)"?([^\]"]*)"?)?\]/g;
   const attrs = [];
   rest = rest.replace(attrRe, (m, name, op, value) => {
     attrs.push({ name, op, value });
@@ -32,6 +44,8 @@ function matchCompound(el, compound) {
     const v = String(value).toLowerCase();
     if (op === '=' && a !== v) return false;
     if (op === '*=' && !a.includes(v)) return false;
+    if (op === '^=' && !a.startsWith(v)) return false;
+    if (op === '$=' && !a.endsWith(v)) return false;
   }
 
   const classNames = (rest.match(/\.[a-zA-Z0-9_-]+/g) || []).map((c) => c.slice(1).toLowerCase());
@@ -47,12 +61,51 @@ function matchCompound(el, compound) {
   return true;
 }
 
+function matchSelectorSequence(el, selector) {
+  const m = selector.match(/^(.*?)([\s>+~]+)([^\s>+~]+)$/);
+  if (!m) {
+    return matchCompound(el, selector);
+  }
+  const [, left, op, right] = m;
+  if (!matchCompound(el, right)) return false;
+  const operator = op.trim() || ' ';
+  if (operator === '+') {
+    if (!el.parentElement) return false;
+    const siblings = el.parentElement.children;
+    const idx = siblings.indexOf(el);
+    if (idx <= 0) return false;
+    return matchSelectorSequence(siblings[idx - 1], left.trim());
+  }
+  if (operator === '~') {
+    if (!el.parentElement) return false;
+    const siblings = el.parentElement.children;
+    const idx = siblings.indexOf(el);
+    for (let i = idx - 1; i >= 0; i--) {
+      if (matchSelectorSequence(siblings[i], left.trim())) return true;
+    }
+    return false;
+  }
+  if (operator === '>') {
+    if (!el.parentElement) return false;
+    return matchSelectorSequence(el.parentElement, left.trim());
+  }
+  if (operator === ' ') {
+    let parent = el.parentElement;
+    while (parent) {
+      if (matchSelectorSequence(parent, left.trim())) return true;
+      parent = parent.parentElement;
+    }
+    return false;
+  }
+  return false;
+}
+
 function matches(el, selector) {
   return selector.split(',').some((part) => {
     let s = part.trim();
     if (!s) return false;
     if (s.includes(' i]')) s = s.replace(/ i\]/g, ']'); // [attr*="x" i] → [attr*="x"]
-    return matchCompound(el, s);
+    return matchSelectorSequence(el, s);
   });
 }
 
