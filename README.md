@@ -1,6 +1,6 @@
 # 视频自动播放器
 
-当前版本：`1.2.2`（Manifest V3）
+当前版本：`1.2.3`（Manifest V3）
 
 一个用于 Chrome / Edge 的网页视频播放辅助扩展。它只在当前页面操作已有的 HTML5 `<video>` 播放器和页面原有的前进控件，适合需要连续播放多个网页视频的场景。
 
@@ -44,7 +44,7 @@
 
 ```text
 视频自动播放器/
-├── manifest.json              # MV3 清单、权限和注入配置 (v1.2.2)
+├── manifest.json              # MV3 清单、权限和注入配置 (v1.2.3)
 ├── background.js              # Service Worker：设置初始化、旧版存储平滑迁移与消息通信
 ├── popup.html                 # 3 Tab 弹窗面板（播放控制、站点规则、诊断日志与脱敏导出）
 ├── popup.js                   # 原生 DOM 挂载、选项卡切换、规则持久化（0 innerHTML CSP 合规）
@@ -115,6 +115,18 @@ npm run test:v12      # 150 项 v1.2.x 进阶特性与多任务点加固断言
 扩展不上传任何页面数据，亦不主动发起外部网络请求（免申请 `webNavigation` 等敏感权限，各 frame 探测通过 `scripting.allFrames` 原生支持）。
 
 ## 更新日志
+
+### v1.2.3 (2026-09-21)
+- **核心连播链路回归排查与修复（视频 A 播完 → 自动进入视频 B → 视频 B 自动起播）**：
+  - **跨 Frame 消息中继闭环**：修复 `frame-messenger.js` 中间 frame 吞没 `NAVIGATING`、`NAVIGATED` 与 `SCAN` 广播的缺陷，建立父子双向中继与 `markSeen` 去重，确保多层嵌套 iframe 下顶层导航与深层视频 frame 始终保持连通。
+  - **统一导航后生命周期与渐进重试**：在 `video-handler.js` 中导出并完善 `afterNavigation(reason)`，在远程跳转、SPA URL 变更与路由切换后统一重置上一轮已完成状态，分阶段（300ms / 1200ms / 2500ms）执行快速到兜底的视频探测与起播恢复。
+  - **MutationObserver 属性监听增强**：在 `content.js` 中补充 `attributes: ['src']` 监听，深度捕获同元素换源（`video.src` 或 `<source src>` 变动），杜绝 DOM 节点未增删时的识别盲区。
+  - **活跃视频选举与已移除节点剪枝**：`scan()` 自动清理脱离 DOM 的旧视频记录；重构 `state.active` 选举模型（播放中 > 未播完可见 > 未播完候选 > 首次发现），防止已播完视频永久霸占焦点阻塞新视频播放。
+  - **换源感知滞后消除**：优化 `sourceKeyOf(video)` 提取，优先读取显式 `src` 属性再降级 `currentSrc`，消除底层微任务延时导致的换源漏报。
+  - **表单内合法前进按钮解禁**：移除 `button-finder.js` 中对 `el.form` 的无条件一票否决，在严密防范 `submit` 提交控件的基础上放行 `<form>` 内包含的正常下一节按钮。
+  - **小视频容差计算加固**：加固 `isAtEnd` 计算（`safeTolerance = Math.min(tolerance, video.duration * 0.5)`），防止短视频在开局误判为结尾。
+  - **Watchdog 空窗期防重与导航锁源绑定**：在 `triggerNextLesson` 设置 `rec.triggered = true` 并由 watchdog 强校验拦截二次跳转；在 `cycle` 引入 `navigatedSource`，确保旧视频瞬态 playing 绝不提前解除导航锁，必须由新源解锁。
+  - **全链路端到端验证**：新增 27 项高强度核心链路回归单测（`test/regression-autoplay-tests.js`）及基于 Headless Chromium 的多层 iframe 真实浏览器 E2E 测试（`test/e2e-browser-test.js`）。
 
 ### v1.2.2 (2026-09-21)
 - **双击修复（DOM 单击事件去重）**：修复 `dom.click(el)` 派发手势事件后又调用原生 `click()` 导致的 click 事件被触发两遍的问题，优先调用原生 `el.click()`，单次操作精准派发 1 次 click，彻底避免按钮或计数组件重复响应。

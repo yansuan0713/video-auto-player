@@ -49,7 +49,11 @@
       const safeNew = dom.sanitizeUrl ? dom.sanitizeUrl(location.href) : location.href;
       AutoNext.debug(`页面 URL 变化：${safeOld} → ${safeNew}（SPA 换页）`);
       lastScanUrl = location.href;
-      videoHandler.resetCycle();
+      if (videoHandler && typeof videoHandler.afterNavigation === 'function') {
+        videoHandler.afterNavigation('SPA换页');
+      } else {
+        videoHandler.resetCycle();
+      }
       skip.onPageSettled('SPA 换页后');
     }
     return videoHandler.scan();
@@ -102,7 +106,11 @@
     dom.click(found.el);
     messenger.setBadge('→', '#16a34a');
     messenger.reportNavigated();
-    videoHandler.resetCycle();
+    if (videoHandler && typeof videoHandler.afterNavigation === 'function') {
+      videoHandler.afterNavigation('代客点击下一节');
+    } else {
+      videoHandler.resetCycle();
+    }
     toast.show('已跳转下一节', 'success');
     return true;
   }
@@ -114,9 +122,13 @@
     rate.applyAll('父级请求');
   }
 
-  /** 确认已经跳转，停止本 frame 的重复动作 */
+  /** 确认已经跳转，停止本 frame 的重复动作并进入统一收尾与播放恢复 */
   function onRemoteNavigated() {
-    videoHandler.resetCycle();
+    if (videoHandler && typeof videoHandler.afterNavigation === 'function') {
+      videoHandler.afterNavigation('收到远程跳转广播');
+    } else {
+      videoHandler.resetCycle();
+    }
   }
 
   // —— 手动操作的尊重：用户自己点过“下一节”，就不再插手 ————————————
@@ -160,8 +172,12 @@
         const safeNew = dom.sanitizeUrl ? dom.sanitizeUrl(location.href) : location.href;
         AutoNext.debug(`SPA 路由切换检测：${safeOld} → ${safeNew}`);
         lastScanUrl = location.href;
-        videoHandler.resetCycle();
         scheduleScan(150);
+        if (videoHandler && typeof videoHandler.afterNavigation === 'function') {
+          videoHandler.afterNavigation('SPA路由切换');
+        } else {
+          videoHandler.resetCycle();
+        }
         skip.onPageSettled('SPA 换页后');
       }
     };
@@ -189,17 +205,28 @@
     // 学习通会先插入 <video>，紧接着再插入普通播放器控件；如果后一批无关变更
     // 覆盖了前一批参数，就会永久错过新视频。
     const scheduleVideoScan = dom.debounce(() => {
-      AutoNext.debug('MutationObserver：检测到新的视频节点');
+      AutoNext.debug('MutationObserver：检测到视频节点或播放源变更');
       scheduleScan(200);
     }, 300);
     const onMutate = (mutations) => {
       let relevant = false;
       for (const mutation of mutations) {
-        for (const node of mutation.addedNodes) {
-          if (node.nodeType !== 1) continue;
-          if (node.tagName === 'VIDEO' || node.tagName === 'SOURCE' || (node.querySelector && node.querySelector('video')) || node.shadowRoot) {
-            relevant = true;
-            break;
+        if (mutation.addedNodes) {
+          for (const node of mutation.addedNodes) {
+            if (node.nodeType !== 1) continue;
+            if (node.tagName === 'VIDEO' || node.tagName === 'SOURCE' || node.tagName === 'IFRAME' || (node.querySelector && (node.querySelector('video') || node.querySelector('iframe'))) || node.shadowRoot) {
+              relevant = true;
+              break;
+            }
+          }
+        }
+        if (mutation.type === 'attributes' && mutation.attributeName === 'src') {
+          const target = mutation.target;
+          if (target && target.nodeType === 1) {
+            const tag = target.tagName;
+            if (tag === 'VIDEO' || tag === 'SOURCE' || tag === 'IFRAME') {
+              relevant = true;
+            }
           }
         }
         if (relevant) break;
@@ -210,7 +237,12 @@
     };
 
     observer = new MutationObserver(onMutate);
-    observer.observe(document.documentElement, { childList: true, subtree: true });
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['src']
+    });
     AutoNext.debug('MutationObserver 已启动');
   }
 
@@ -240,8 +272,12 @@
         const safeNew = dom.sanitizeUrl ? dom.sanitizeUrl(location.href) : location.href;
         AutoNext.debug(`轮询检测到页面 URL 变化：${safeOld} → ${safeNew}`);
         lastScanUrl = location.href;
-        videoHandler.resetCycle();
         scheduleScan(100);
+        if (videoHandler && typeof videoHandler.afterNavigation === 'function') {
+          videoHandler.afterNavigation('轮询URL变更');
+        } else {
+          videoHandler.resetCycle();
+        }
       }
     }, URL_CHECK_MS);
   }

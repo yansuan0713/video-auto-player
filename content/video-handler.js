@@ -74,6 +74,7 @@
 
   function isEligible(video) {
     if (!isVideoElement(video)) return false;
+    if (typeof video.isConnected === 'boolean' && !video.isConnected) return false;
     const duration = video.duration;
     if (!Number.isFinite(duration) || duration <= 0) return false;
     if (duration < options.minDuration) return false;
@@ -144,9 +145,15 @@
   }
 
   function sourceKeyOf(video) {
-    if (video.currentSrc || video.src) return video.currentSrc || video.src;
-    const source = video.querySelector('source');
-    return source ? source.src : '';
+    if (!video) return '';
+    const attrSrc = (typeof video.getAttribute === 'function' && video.getAttribute('src')) || video.src;
+    if (attrSrc) return attrSrc;
+    const source = video.querySelector ? video.querySelector('source') : null;
+    if (source) {
+      const sSrc = (typeof source.getAttribute === 'function' && source.getAttribute('src')) || source.src;
+      if (sSrc) return sSrc;
+    }
+    return video.currentSrc || '';
   }
 
   /**
@@ -165,7 +172,8 @@
   function isAtEnd(video, tolerance = options.endTolerance) {
     if (!Number.isFinite(video.duration) || video.duration <= 0) return false;
     if (video.ended) return true;
-    return video.currentTime >= video.duration - tolerance;
+    const safeTolerance = Math.min(tolerance, video.duration * 0.5);
+    return video.currentTime >= video.duration - safeTolerance;
   }
 
   function isLooping(video) {
@@ -203,6 +211,15 @@
     if (!isEligible(video)) return;
     const rec = recordOf(video);
     rec.everPlayed = true; // 真的播过了，兜底判定才有资格生效
+
+    // 只有当不是上一轮刚跳转过的旧视频/旧源重新触发 playing 时，才解除跳转保护锁
+    const currentKey = sourceKeyOf(video);
+    const isNavigatedOldSource = !!(cycle.navigatedSource && currentKey && currentKey === cycle.navigatedSource);
+    if (!isNavigatedOldSource && !video.ended && !isAtEnd(video)) {
+      cycle.navigated = false;
+      cycle.navigatedSource = '';
+    }
+
     if (state.active !== video || !rec.detectedLogged) {
       markDetected(video, 'playing');
     }
@@ -385,20 +402,33 @@
   function onSourceMutated(video) {
     const rec = recordOf(video, { create: false });
     const key = sourceKeyOf(video);
-    if (rec && rec.sourceKey && key !== rec.sourceKey) {
-      AutoNext.debug('检测到播放器换源，重置上一轮状态');
-      resetCycle({ keepSource: false });
-    }
+    AutoNext.debug('检测到播放器换源，完整重置上一轮状态');
+    resetCycle({ keepSource: false });
     if (rec) {
+      rec.sourceKey = key;
       rec.autoPlayAttempts = 0; // 换源后重新允许自动播放
       rec.progressSinceAutoPlay = 0;
       rec.resumeScheduled = false;
       rec.lastPause = null;
       rec.detectedLogged = false; // 换源等于换了一节，重新打印一次 detected
+      rec.everPlayed = false; // 新源尚未真正播放过
+      rec.finishHits = 0;
+      rec.lastEndedAt = 0;
+      rec.lastEndedPlayed = 0;
+      rec.finishedByWatchdog = false;
+      rec.lastSkipReason = '';
+      rec.played = 0;
+      rec.lastTime = Number(video.currentTime || 0);
     }
+    state.active = video;
+    state.lastEndedAt = 0;
+    cycle.lastEndedAt = 0;
     // 换源后播放器常常把倍速重置回 1.0，这里补一次（后续 loadedmetadata / play 还会再补）
     rate.apply(video, '换源后');
     handlers.onVideoAvailable && handlers.onVideoAvailable(video);
+    if (AutoNext.settings && AutoNext.settings.enabled && video.paused && !video.ended) {
+      startPlayGrace('换源后自动播放');
+    }
   }
 
   // —— 监听注册 ————————————————————————————————————————————————
@@ -441,20 +471,48 @@
     video.addEventListener('loadedmetadata', () => {
       if (isEligible(video)) markDetected(video, 'loadedmetadata');
     }, { once: true });
+
+    // 数据已缓冲至可播放状态时，若仍处于暂停则及时唤醒自动播放
+    video.addEventListener('canplay', () => {
+      if (isEligible(video) && AutoNext.settings && AutoNext.settings.enabled && video.paused && !video.ended) {
+        startPlayGrace('数据就绪(canplay)');
+      }
+    }, { once: true });
   }
 
   function scan() {
-    let count = 0;
+    // 1. 清理已脱离 DOM 的旧视频记录
+    for (const [video] of state.byVideo) {
+      if (typeof video.isConnected === 'boolean' && !video.isConnected) {
+        state.byVideo.delete(video);
+        if (state.active === video) state.active = null;
+      }
+    }
+
+    // 2. 扫描当前 DOM 内存在的全部视频
     const list = (dom && typeof dom.findVideos === 'function')
       ? dom.findVideos(document)
       : Array.from(document.querySelectorAll('video'));
     list.forEach((video) => {
       attach(video);
-      count += 1;
+      const rec = recordOf(video, { create: false });
+      const currentKey = sourceKeyOf(video);
+      if (rec && rec.sourceKey && currentKey && currentKey !== rec.sourceKey) {
+        onSourceMutated(video);
+      }
     });
-    AutoNext.debug(`扫描完成，页面内 <video> 数量：${count}`);
-    const eligible = Array.from(state.byVideo.keys()).filter(isEligible);
-    if (eligible.length && state.active !== eligible[0]) state.active = eligible[0];
+    AutoNext.debug(`扫描完成，页面内 <video> 数量：${list.length}`);
+
+    // 3. 筛选当前有效可用的视频并选取最优 active
+    const eligible = list.filter(isEligible);
+    const unended = eligible.filter((v) => !v.ended && !isAtEnd(v));
+    const playing = unended.find((v) => !v.paused);
+    const visible = unended.find((v) => dom && dom.isVisible ? dom.isVisible(v) : true);
+    const best = playing || visible || unended[0] || eligible[0] || null;
+    if (best && state.active !== best) {
+      state.active = best;
+    }
+
     // 每次扫描（首次加载 / SPA 换页 / 跳转下一节后 / MutationObserver 触发）都补一次倍速
     rate.applyAll('scan');
     return eligible;
@@ -551,6 +609,8 @@
     running: false,
     attempts: 0,
     navigated: false,
+    /** 上一轮触发跳转的媒体源标识（用于杜绝旧视频 playing 提前解锁防重） */
+    navigatedSource: '',
     /** 上一次向父级 frame 发出协助请求的时间 */
     handoffAt: 0,
     /** 诊断用：发出了几次协助请求、投递到了几个 frame */
@@ -574,6 +634,7 @@
     cycle.running = false;
     cycle.attempts = 0;
     cycle.navigated = false;
+    cycle.navigatedSource = '';
     cycle.handoffAt = 0;
     cycle.handoffCount = 0;
     cycle.handoffDelivered = 0;
@@ -648,18 +709,32 @@
   }
 
   /** 点击“下一节”后都会走到这里：等新播放器加载出来，补一次倍速 + 必要时自动播放 */
-  function afterNavigation() {
+  function afterNavigation(reason = '跳转到下一节之后') {
     cycle.running = false;
-    AutoNext.debug('本轮跳转流程结束，等待下一节播放器加载');
-    schedule(() => {
-      scan();
-      // 用宽限期重试自动播放：新播放器可能晚一点才出现，
-      // 或者第一次 play() 因为元数据没就绪而落空 —— 只试一次会导致视频永久卡在暂停
-      startPlayGrace('跳转到下一节之后');
-      rate.applyAll('下一节'); // 下一节播放器可能刚创建，或把倍速重置回了 1.0
-      // 如果下一节根本不是视频（测验/讨论/空白任务点），交给跳过控制器继续往后走
-      if (skip && skip.onPageSettled) skip.onPageSettled('视频结束跳转之后');
-    }, 2500);
+    cycle.navigated = true;
+    if (!cycle.navigatedSource && state.active) {
+      cycle.navigatedSource = sourceKeyOf(state.active);
+    }
+    AutoNext.debug(`本轮跳转流程结束，等待下一节播放器加载 (${reason})`);
+
+    const runRecovery = (stage) => {
+      if (!AutoNext.settings.enabled) return;
+      const eligible = (AutoNext.videoHandler && typeof AutoNext.videoHandler.scan === 'function')
+        ? AutoNext.videoHandler.scan()
+        : scan();
+      rate.applyAll(`下一节-${stage}`);
+      const targetVideo = state.active || (eligible && eligible[0]) || null;
+      if (targetVideo && !targetVideo.ended && !isAtEnd(targetVideo)) {
+        startPlayGrace(`跳转后恢复-${stage}`);
+      }
+      if (stage === 'final' && skip && skip.onPageSettled) {
+        skip.onPageSettled('视频结束跳转之后');
+      }
+    };
+
+    schedule(() => runRecovery('quick'), 300);
+    schedule(() => runRecovery('medium'), 1200);
+    schedule(() => runRecovery('final'), 2500);
   }
 
   /**
@@ -739,7 +814,16 @@
       return;
     }
     const video = state.active;
+    const rec = video ? recordOf(video, { create: false }) : null;
+    if (rec && rec.triggered) {
+      AutoNext.debug('当前视频/源已触发过跳转，忽略重复触发');
+      return;
+    }
+    if (rec) {
+      rec.triggered = true;
+    }
     cycle.lastEndedAt = now;
+    cycle.navigatedSource = sourceKeyOf(video);
     cycle.running = true;
     cycle.attempts = 0;
     AutoNext.log('视频已播完，开始跳转', `(${reason})`);
@@ -778,6 +862,7 @@
         return;
       }
       if (video.ended && rec.lastEndedAt) return; // 原生 ended 已经处理过了
+      if (rec.finishedByWatchdog || rec.triggered) return; // 已经处理过跳转了
       if (Date.now() - cycle.lastEndedAt < 3000) return; // 刚处理过
 
       // 和 ended 路径同样的安全判定：拖到结尾不算看完，直接不处理
@@ -920,6 +1005,7 @@
     attemptNext,
     markDetected,
     notifyManualNavigation,
+    afterNavigation,
     resetCycle: () => resetCycle({ keepSource: false }),
     configure(opts) {
       options = { ...options, ...opts };

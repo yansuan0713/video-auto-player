@@ -182,14 +182,19 @@
           }
           case TYPES.SCAN:
             if (handlers.onScan) handlers.onScan();
+            messenger.broadcast(TYPES.SCAN, data.id);
             break;
           case TYPES.NAVIGATING:
             lastNavigationAt = Date.now();
             if (handlers.onNavigating) handlers.onNavigating();
+            messenger.broadcast(TYPES.NAVIGATING, data.id);
+            if (!messenger.isTop) messenger.notifyParent(TYPES.NAVIGATING, data.id);
             break;
           case TYPES.NAVIGATED:
             lastNavigationAt = Date.now();
             if (handlers.onNavigated) handlers.onNavigated();
+            messenger.broadcast(TYPES.NAVIGATED, data.id);
+            if (!messenger.isTop) messenger.notifyParent(TYPES.NAVIGATED, data.id);
             break;
           default:
             break;

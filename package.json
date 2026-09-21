@@ -1,12 +1,14 @@
 {
   "name": "video-auto-player",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "辅助网页 HTML5 视频播放与页面内章节导航；仅操作当前页面已有控件，不修改进度或伪造时长。",
   "scripts": {
-    "test": "node test/run-tests.js && node test/popup-tests.js && node test/v12-features-tests.js",
+    "test": "node test/run-tests.js && node test/popup-tests.js && node test/v12-features-tests.js && node test/regression-autoplay-tests.js",
     "test:content": "node test/run-tests.js",
     "test:popup": "node test/popup-tests.js",
-    "test:v12": "node test/v12-features-tests.js"
+    "test:v12": "node test/v12-features-tests.js",
+    "test:regression": "node test/regression-autoplay-tests.js",
+    "test:e2e": "node test/e2e-browser-test.js"
   },
   "keywords": [
     "chrome-extension",
@@ -14,5 +16,8 @@
     "manifest-v3",
     "autoplay"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "puppeteer-core": "^25.11.0"
+  }
 }

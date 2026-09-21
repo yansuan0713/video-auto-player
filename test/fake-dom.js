@@ -178,6 +178,29 @@ class FakeElement {
     if (name === 'id') return this.id || null;
     return Object.prototype.hasOwnProperty.call(this.attributes, name) ? this.attributes[name] : null;
   }
+  get form() {
+    if (this.tagName === 'BUTTON' || this.tagName === 'INPUT' || this.tagName === 'SELECT' || this.tagName === 'TEXTAREA') {
+      return this.closest('form');
+    }
+    return null;
+  }
+  get type() {
+    const attr = this.getAttribute('type');
+    if (attr) return String(attr).toLowerCase();
+    if (this.tagName === 'BUTTON') return 'submit';
+    if (this.tagName === 'INPUT') return 'text';
+    return '';
+  }
+  set type(value) {
+    this.setAttribute('type', value);
+  }
+  remove() {
+    if (this.parentElement) {
+      this.parentElement.children = this.parentElement.children.filter((c) => c !== this);
+      this.parentElement = null;
+      this.isConnected = false;
+    }
+  }
   hasAttribute(name) { return this.getAttribute(name) != null; }
   append(child) { return this.appendChild(child); }
   appendChild(child) {
