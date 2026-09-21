@@ -17,6 +17,7 @@ const DEFAULTS = {
   playbackRate: 2.0,
   autoSkipNonVideo: false,
   verbose: false,
+  customNextSelector: '',
   siteSettings: {},
   configVersion: '1.2.0'
 };

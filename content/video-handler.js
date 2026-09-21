@@ -622,6 +622,11 @@
       AutoNext.debug('交接成功：其他 frame 已完成跳转');
       return;
     }
+    const now = Date.now();
+    if (cycle.manualNavGraceUntil && now < cycle.manualNavGraceUntil) {
+      AutoNext.debug('交接回音检查：当前处于手动导航静默保护期，停止重试');
+      return;
+    }
     const video = state.active;
     if (!video || !looksFinished(video)) {
       AutoNext.debug('交接后视频状态已变化，不再重试');

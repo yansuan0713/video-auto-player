@@ -1095,13 +1095,59 @@ async function testClickDeduplicationAndGrace() {
     const popupCode = fs.readFileSync(path.join(__dirname, '../popup.js'), 'utf8');
     check('popup.js 中绝无 chrome.webNavigation 遗留调用', !popupCode.includes('chrome.webNavigation'));
   }
+
+  // 12.6 内部派发点击不会被 watchUserNavigation 误判为手动操作
+  {
+    const doc = new FakeElement('html');
+    const body = doc.append(new FakeElement('body'));
+    const nextBtn = body.append(new FakeElement('button', { id: 'nextBtn', text: '下一节' }));
+
+    const { sandbox, timers } = createSandbox({
+      page: { documentElement: doc, body },
+      storage: { autoNext: true }
+    });
+    loadExtension(sandbox);
+    await runTimers(timers);
+
+    const prevGrace = sandbox.window.AutoNext.videoHandler.stats().cycle.manualNavGraceUntil;
+    sandbox.window.AutoNext.dom.click(nextBtn);
+    const postGrace = sandbox.window.AutoNext.videoHandler.stats().cycle.manualNavGraceUntil;
+
+    check('插件内部点击不会激活手动静默保护期（防误判）', prevGrace === postGrace, `prev=${prevGrace} post=${postGrace}`);
+  }
+
+  // 12.7 checkHandoffResult 在手动导航静默期内放弃重试
+  {
+    const doc = new FakeElement('html');
+    const body = doc.append(new FakeElement('body'));
+    const video = body.append(new FakeVideoElement({ duration: 600 }));
+    const { sandbox, timers } = createSandbox({
+      page: { documentElement: doc, body, video },
+      storage: { autoNext: true }
+    });
+    loadExtension(sandbox);
+    await runTimers(timers);
+
+    sandbox.window.AutoNext.videoHandler.notifyManualNavigation(3000);
+    check('处于手动导航静默期时交接回音检查不重新启动跳转循环', !sandbox.window.AutoNext.videoHandler.stats().cycle.running);
+  }
+
+  // 12.8 消除 selectorCache 死代码与 background migrateSettings 校验同步
+  {
+    const buttonFinderCode = fs.readFileSync(path.join(__dirname, '../content/button-finder.js'), 'utf8');
+    check('button-finder.js 中已彻底移除 selectorCache 死代码', !buttonFinderCode.includes('selectorCache'));
+
+    const bgMig = migrateSettings({ siteSettings: [1, 2, 3] });
+    check('background.js migrateSettings 能够纠正数组类型的 siteSettings', typeof bgMig.siteSettings === 'object' && !Array.isArray(bgMig.siteSettings));
+    check('background.js migrateSettings 补齐 customNextSelector', typeof bgMig.customNextSelector === 'string');
+  }
 }
 
 // ————————————————————————————————————————————————————————————————
 // 主执行器
 // ————————————————————————————————————————————————————————————————
 (async () => {
-  console.log('Video Auto Player v1.2.1 全量测试套件');
+  console.log('Video Auto Player v1.2.2 全量测试套件');
   console.log('='.repeat(60));
 
   await testSettingsMigration();

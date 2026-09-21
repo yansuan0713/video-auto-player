@@ -126,8 +126,9 @@
       'click',
       (event) => {
         if (!started) return;
-        // 插件自己派发的点击也会冒泡到这里，用“流程进行中”做区分
+        // 插件自己派发的点击也会冒泡到这里，用“流程进行中”与 isInternalClicking 做区分
         if (videoHandler.stats().cycle.running) return;
+        if (dom.isInternalClicking && dom.isInternalClicking()) return;
         const target = event.target && event.target.closest
           ? event.target.closest('a, button, [role="button"], [onclick], li, span, div')
           : null;

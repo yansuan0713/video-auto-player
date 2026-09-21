@@ -1,6 +1,6 @@
 {
   "name": "video-auto-player",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "辅助网页 HTML5 视频播放与页面内章节导航；仅操作当前页面已有控件，不修改进度或伪造时长。",
   "scripts": {
     "test": "node test/run-tests.js && node test/popup-tests.js && node test/v12-features-tests.js",

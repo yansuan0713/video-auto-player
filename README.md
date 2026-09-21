@@ -1,6 +1,6 @@
 # 视频自动播放器
 
-当前版本：`1.2.1`（Manifest V3）
+当前版本：`1.2.2`（Manifest V3）
 
 一个用于 Chrome / Edge 的网页视频播放辅助扩展。它只在当前页面操作已有的 HTML5 `<video>` 播放器和页面原有的前进控件，适合需要连续播放多个网页视频的场景。
 
@@ -44,7 +44,7 @@
 
 ```text
 视频自动播放器/
-├── manifest.json              # MV3 清单、权限和注入配置 (v1.2.1)
+├── manifest.json              # MV3 清单、权限和注入配置 (v1.2.2)
 ├── background.js              # Service Worker：设置初始化、旧版存储平滑迁移与消息通信
 ├── popup.html                 # 3 Tab 弹窗面板（播放控制、站点规则、诊断日志与脱敏导出）
 ├── popup.js                   # 原生 DOM 挂载、选项卡切换、规则持久化（0 innerHTML CSP 合规）
@@ -63,7 +63,7 @@
 │   ├── fake-dom.js            # 测试用轻量 DOM 桩（支持 open/closed Shadow DOM、组合选择器与伪类）
 │   ├── run-tests.js           # 内容脚本回归测试套件（117 项）
 │   ├── popup-tests.js         # 弹窗面板交互与 CSP 安全测试（50 项）
-│   └── v12-features-tests.js  # v1.2 特性与同章节多任务点全量测试套件（131 项）
+│   └── v12-features-tests.js  # v1.2 特性与同章节多任务点全量测试套件（144 项）
 ├── .github/workflows/test.yml # GitHub Actions 持续集成自动化工作流
 ├── package.json               # 自动化测试脚本与项目描述
 └── README.md
@@ -95,13 +95,13 @@ __AUTO_NEXT__.trySkip()        // 手动检查是否需要跳过无视频页面
 项目附带完整的 Node.js 测试套件，无需启动真实浏览器即可全真模拟 DOM 运行环境：
 
 ```bash
-# 执行全部 306 项测试
+# 执行全部 311 项测试
 npm test
 
 # 分别执行各子套件
 npm run test:content  # 117 项 content script 行为测试
 npm run test:popup    # 50 项 popup 面板与 CSP 测试
-npm run test:v12      # 139 项 v1.2.x 进阶特性与多任务点加固断言
+npm run test:v12      # 144 项 v1.2.x 进阶特性与多任务点加固断言
 ```
 
 ## 权限说明
@@ -115,6 +115,11 @@ npm run test:v12      # 139 项 v1.2.x 进阶特性与多任务点加固断言
 扩展不上传任何页面数据，亦不主动发起外部网络请求（免申请 `webNavigation` 等敏感权限，各 frame 探测通过 `scripting.allFrames` 原生支持）。
 
 ## 更新日志
+
+### v1.2.2 (2026-09-21)
+- **修复（内部点击防误判）**：在 `dom-utils.js` 中新增 `isInternalClicking` 执行深度计数，杜绝跨 frame 远程代点或其他插件内部派发的点击冒泡触发 `watchUserNavigation` 产生的假“手动点击”日志和多余静默期。
+- **完善（交接回音检查静默期保护）**：在 `checkHandoffResult` 重试流程中补齐 `manualNavGraceUntil` 检查，彻底杜绝交接等待超时与手动导航并发时的边界重复跳节。
+- **清理（死代码清理与配置迁移同步）**：彻底清除 `button-finder.js` 中的未引用 `selectorCache`；同步 `background.js` 的 `DEFAULTS` 与 `migrateSettings`（补齐 `customNextSelector` 与 `Array.isArray(siteSettings)` 校验），消除跨端配置漂移。
 
 ### v1.2.1 (2026-09-21)
 - **修复（DOM 点击双重触发）**：修复 `dom.click(el)` 派发手势事件后又调用原生 `click()` 导致的 click 事件被触发两遍的问题，确保单次操作精准派发 1 次 click，彻底避免按钮或计数组件重复响应。

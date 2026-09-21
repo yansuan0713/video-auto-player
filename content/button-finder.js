@@ -104,8 +104,6 @@
 
   const TEXT_LIMIT = 60; // 文本太长基本是容器，不是按钮
 
-  const selectorCache = new Map();
-
   /** 安全地跑一个选择器：页面可能在改版中，非法选择器不该让插件崩掉 */
   function safeQueryAll(selector) {
     try {

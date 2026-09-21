@@ -15,6 +15,7 @@ const DEFAULTS = {
   playbackRate: 2.0,
   autoSkipNonVideo: false,
   verbose: false,
+  customNextSelector: '',
   siteSettings: {},
   configVersion: '1.2.0'
 };
@@ -28,8 +29,11 @@ function migrateSettings(raw = {}) {
   if (typeof next.playbackRate !== 'number' || !Number.isFinite(next.playbackRate) || next.playbackRate <= 0) {
     next.playbackRate = 2.0;
   }
-  if (!next.siteSettings || typeof next.siteSettings !== 'object') {
+  if (!next.siteSettings || typeof next.siteSettings !== 'object' || Array.isArray(next.siteSettings)) {
     next.siteSettings = {};
+  }
+  if (typeof next.customNextSelector !== 'string') {
+    next.customNextSelector = typeof raw.customSelector === 'string' ? raw.customSelector : '';
   }
   next.configVersion = '1.2.0';
   return next;

@@ -7,6 +7,8 @@
 
   const AutoNext = window.AutoNext;
 
+  let internalClickDepth = 0;
+
   const dom = {
     /** 节点是否在文档里且可见（可见性判定宽容一些：不透明、有尺寸即可） */
     isVisible(el) {
@@ -88,42 +90,52 @@
      * 模拟一次真实点击。
      * 学习通部分按钮是 Vue/React 绑定的，需要完整的事件序列才会触发。
      */
+    /** 判断当前是否正在执行插件自身派发的点击事件（用于事件监听器区分插件操作与用户真实点击） */
+    isInternalClicking() {
+      return internalClickDepth > 0;
+    },
+
     click(el) {
-      const rect = el.getBoundingClientRect();
-      const opts = {
-        bubbles: true,
-        cancelable: true,
-        view: window,
-        clientX: rect.left + rect.width / 2,
-        clientY: rect.top + rect.height / 2
-      };
-      const hasPointer = typeof window.PointerEvent === 'function';
-      // 派发指针与鼠标按下/抬起事件，以适配需要完整手势序列的现代前端框架
-      for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
-        const isPointer = type.startsWith('pointer');
-        if (isPointer && !hasPointer) continue;
-        const Ctor = isPointer ? window.PointerEvent : window.MouseEvent;
-        try {
-          el.dispatchEvent(new Ctor(type, opts));
-        } catch (err) {
-          AutoNext.debug('派发事件失败：', type, err && err.message);
+      internalClickDepth += 1;
+      try {
+        const rect = el.getBoundingClientRect();
+        const opts = {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          clientX: rect.left + rect.width / 2,
+          clientY: rect.top + rect.height / 2
+        };
+        const hasPointer = typeof window.PointerEvent === 'function';
+        // 派发指针与鼠标按下/抬起事件，以适配需要完整手势序列的现代前端框架
+        for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
+          const isPointer = type.startsWith('pointer');
+          if (isPointer && !hasPointer) continue;
+          const Ctor = isPointer ? window.PointerEvent : window.MouseEvent;
+          try {
+            el.dispatchEvent(new Ctor(type, opts));
+          } catch (err) {
+            AutoNext.debug('派发事件失败：', type, err && err.message);
+          }
         }
-      }
-      // 触发最终点击：原生 el.click() 会自动派发 click 事件并执行浏览器默认行为（如下一页链接跳转）
-      // 避免先 dispatchEvent('click') 又调 el.click() 导致 click 事件被触发两遍
-      let nativeClicked = false;
-      if (typeof el.click === 'function' && !(typeof HTMLInputElement !== 'undefined' && el instanceof HTMLInputElement)) {
-        try {
-          el.click();
-          nativeClicked = true;
-        } catch (_) { /* ignore */ }
-      }
-      if (!nativeClicked) {
-        try {
-          el.dispatchEvent(new window.MouseEvent('click', opts));
-        } catch (err) {
-          AutoNext.debug('派发事件失败：click', err && err.message);
+        // 触发最终点击：原生 el.click() 会自动派发 click 事件并执行浏览器默认行为（如下一页链接跳转）
+        // 避免先 dispatchEvent('click') 又调 el.click() 导致 click 事件被触发两遍
+        let nativeClicked = false;
+        if (typeof el.click === 'function' && !(typeof HTMLInputElement !== 'undefined' && el instanceof HTMLInputElement)) {
+          try {
+            el.click();
+            nativeClicked = true;
+          } catch (_) { /* ignore */ }
         }
+        if (!nativeClicked) {
+          try {
+            el.dispatchEvent(new window.MouseEvent('click', opts));
+          } catch (err) {
+            AutoNext.debug('派发事件失败：click', err && err.message);
+          }
+        }
+      } finally {
+        internalClickDepth = Math.max(0, internalClickDepth - 1);
       }
     },
 
