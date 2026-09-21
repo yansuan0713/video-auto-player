@@ -1,6 +1,6 @@
 # 视频自动播放器
 
-当前版本：`1.2.0`（Manifest V3）
+当前版本：`1.2.1`（Manifest V3）
 
 一个用于 Chrome / Edge 的网页视频播放辅助扩展。它只在当前页面操作已有的 HTML5 `<video>` 播放器和页面原有的前进控件，适合需要连续播放多个网页视频的场景。
 
@@ -10,6 +10,8 @@
 | --- | --- |
 | 自动播放与恢复 | 发现播放器（含 open Shadow DOM 内播放器）后尝试开始播放；页面切换或短暂暂停后，在有限次数和时间窗口内恢复。 |
 | 连续页面导航 | 视频自然结束后，优先使用自定义 CSS Selector，未指定时启发式评分点击“下一节 / 下一个 / Next”控件。 |
+| 章节多任务点与目录导航 | 支持超星等平台同章节内多任务点 Tab（`[id^="dct"]`、`.tabtags` 等）依次顺播；在无跨章按钮时通过目录树相邻小节兜底跳转。 |
+| 测验小节放行与安全隔离 | 智能放行通往“章节测验 / 单元测试”的合法前进导航，同时 100% 坚决拦截“提交测验 / 交卷 / 开始答题”等答卷控件，绝不误触。 |
 | 自定义播放速率 | 支持任意自定义 `playbackRate`（0.1x ~ 16.0x），提供 1.0x ~ 3.0x 快捷选档与输入框；平台限制时自适应回退并保持播放。 |
 | 域名级站点规则 | 支持为当前站点单独设置连播开关、独立倍速与自定义下一节选择器，未配置时继承全局默认。 |
 | 可选跳过无视频页面 | 明确开启后，连续内容中遇到没有播放器的页面时继续寻找下一个视频页面；默认关闭。 |
@@ -42,7 +44,7 @@
 
 ```text
 视频自动播放器/
-├── manifest.json              # MV3 清单、权限和注入配置 (v1.2.0)
+├── manifest.json              # MV3 清单、权限和注入配置 (v1.2.1)
 ├── background.js              # Service Worker：设置初始化、旧版存储平滑迁移与消息通信
 ├── popup.html                 # 3 Tab 弹窗面板（播放控制、站点规则、诊断日志与脱敏导出）
 ├── popup.js                   # 原生 DOM 挂载、选项卡切换、规则持久化（0 innerHTML CSP 合规）
@@ -50,18 +52,18 @@
 │   ├── logger.js              # 日志出口与 50 条内存循环队列 (Ring Buffer)
 │   ├── settings.js            # 开关状态、站点规则覆盖计算 (resolveEffective) 与存储监听
 │   ├── dom-utils.js           # DOM 可见性判定、URL 敏感参数脱敏与 open Shadow DOM 穿透查找
-│   ├── button-finder.js       # 自定义 CSS Selector 优先支持与前进控件多维度安全打分
-│   ├── frame-messenger.js     # iframe 跨层消息协调与导航状态广播
+│   ├── button-finder.js       # 多任务点 Tab 优先、自定义 CSS Selector 与前进控件多维度打分
+│   ├── frame-messenger.js     # iframe 跨层消息协调、去重防回环与导航状态广播
 │   ├── skip-controller.js     # 可选的无视频页面自动跳过控制器
 │   ├── rate-controller.js     # 任意目标倍速控制、限频防互抢与平台限制自适应降级
 │   ├── video-handler.js       # 播放器发现、状态看门狗、异常暂停取证与自然结束跳转
 │   ├── ui.js                  # 页面内状态提示 UI
 │   └── content.js             # 主控制器、SPA 路由增强 (pushState/popstate/hashchange) 与控制台 API
 ├── test/
-│   ├── fake-dom.js            # 测试用轻量 DOM 桩（支持 open/closed Shadow DOM 与媒体元素事件）
+│   ├── fake-dom.js            # 测试用轻量 DOM 桩（支持 open/closed Shadow DOM、组合选择器与伪类）
 │   ├── run-tests.js           # 内容脚本回归测试套件（117 项）
 │   ├── popup-tests.js         # 弹窗面板交互与 CSP 安全测试（50 项）
-│   └── v12-features-tests.js  # v1.2.0 新特性全量测试套件（75 项）
+│   └── v12-features-tests.js  # v1.2 特性与同章节多任务点全量测试套件（131 项）
 ├── .github/workflows/test.yml # GitHub Actions 持续集成自动化工作流
 ├── package.json               # 自动化测试脚本与项目描述
 └── README.md
@@ -93,13 +95,13 @@ __AUTO_NEXT__.trySkip()        // 手动检查是否需要跳过无视频页面
 项目附带完整的 Node.js 测试套件，无需启动真实浏览器即可全真模拟 DOM 运行环境：
 
 ```bash
-# 执行全部 242 项测试
+# 执行全部 298 项测试
 npm test
 
 # 分别执行各子套件
 npm run test:content  # 117 项 content script 行为测试
 npm run test:popup    # 50 项 popup 面板与 CSP 测试
-npm run test:v12      # 75 项 v1.2.0 新特性与安全断言
+npm run test:v12      # 131 项 v1.2.x 进阶特性与多任务点加固断言
 ```
 
 ## 权限说明
@@ -112,6 +114,22 @@ npm run test:v12      # 75 项 v1.2.0 新特性与安全断言
 | `<all_urls>` | 支持不同网页来源和嵌套 iframe 中的 HTML5 播放器 |
 
 扩展不上传任何页面数据，亦不主动发起外部网络请求。
+
+## 更新日志
+
+### v1.2.1 (2026-09-21)
+- **修复（多任务点识别）**：新增超星等平台同章节多任务点 Tab（`[id^="dct"]`、`.tabtags` 及未完成任务点图标）高权重识别规则，解决多视频同页播放完毕后停滞不跳转的问题。
+- **修复（反向词误伤）**：重构测验/考试反向词过滤逻辑。引入 `isForwardNav`，智能放行通往“章节测验 / 单元测试”小节的合法“下一节”按钮；同时对测验页面内部的“提交测验 / 交卷 / 开始答题”及 submit 表单保持严格排除。
+- **优化（跨 Frame 消息机制）**：修复 `frame-messenger.js` 在向相邻 frame 请求查找下一节时的回环弹跳，发送前标记本 frame 消息已记录，杜绝无效重试与报错。
+- **增强（目录树兜底）**：补充章节目录树相邻小节（`.posCatalog_select + li/div`）选择器，在独立下一节按钮隐藏或改版时自动接管。
+- **测试与安全**：补充 11.1~11.4 共 8 项新断言，测试用例总量提升至 298 项（全部通过），100% 遵守 CSP。
+
+### v1.2.0 (2026-09-20)
+- **新增（自定义播放速率）**：支持 0.1x ~ 16.0x 任意倍速，增加 1.0x ~ 3.0x 快捷选档与输入框，增强平台限制检测与防互抢机制。
+- **新增（站点独立规则）**：支持为特定域名单独配置连播开关、独立倍速与自定义下一节 CSS Selector。
+- **新增（诊断面板与脱敏导出）**：3 Tab 面板布局，支持 50 条事件内存回放与脱敏诊断报告（JSON / 纯文本）一键导出。
+- **增强（Shadow DOM 穿透）**：支持 open Shadow DOM 递归探测。
+- **增强（SPA 路由感知）**：集成 popstate / hashchange 与 URL 轮询感知单页应用无刷新换节。
 
 ## 许可与贡献
 
