@@ -71,8 +71,20 @@ const ui = {
   exportJsonBtn: $('exportJsonBtn'),
   copyTextBtn: $('copyTextBtn'),
   refreshDiagBtn: $('refreshDiagBtn'),
-  recentEventsBox: $('recentEventsBox')
+  recentEventsBox: $('recentEventsBox'),
+
+  // 版本展示始终以 manifest.json 为唯一来源，避免发布时手工版本号漂移。
+  extensionVersionBadge: $('extensionVersionBadge'),
+  extensionBuildInfo: $('extensionBuildInfo')
 };
+
+const extensionVersion = chrome.runtime.getManifest().version;
+if (ui.extensionVersionBadge) {
+  ui.extensionVersionBadge.textContent = `v${extensionVersion}`;
+}
+if (ui.extensionBuildInfo) {
+  ui.extensionBuildInfo.textContent = `Manifest V3 · 支持 iframe · v${extensionVersion}`;
+}
 
 let currentSettings = { ...DEFAULTS };
 let currentTabHost = '';
