@@ -257,12 +257,7 @@ async function runE2E() {
           const v = document.getElementById('v1');
           if (!v) return;
           if (v.paused) await v.play();
-          for (let i = 0; i < 5; i++) {
-            await new Promise((r) => setTimeout(r, 100));
-            v.dispatchEvent(new Event('timeupdate'));
-          }
-          v.currentTime = v.duration || 1.0;
-          v.dispatchEvent(new Event('ended'));
+          // Use the actual media ended event; seeking/dispatching ended masks regressions.
         });
       } catch (_) {}
     }

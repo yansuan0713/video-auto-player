@@ -286,6 +286,21 @@ async function testDiagScriptingFailure() {
   check('提示受限页面', text.includes('不允许注入'), text);
 }
 
+async function testDiagnosticTimeoutAndReentry() {
+  const { sandbox, byId } = createPopupSandbox();
+  let calls = 0;
+  sandbox.chrome.scripting.executeScript = () => { calls++; return new Promise(() => {}); };
+  sandbox.setTimeout = fn => setImmediate(fn);
+  sandbox.clearTimeout = clearImmediate;
+  runPopup(sandbox);
+  byId.get('printStats').dispatchEvent({ type: 'click' });
+  byId.get('printStats').dispatchEvent({ type: 'click' });
+  await tick(); await tick(); await tick(); await tick();
+  check('重复点击诊断时只发起一次扫描', calls === 1, String(calls));
+  check('诊断脚本挂起时显示超时并解除 busy',
+    diagText(byId).includes('超时') && !byId.get('printStats').classList.contains('busy'), diagText(byId));
+}
+
 async function testManualClickNext() {
   console.log('\n[6] 手动点“下一节”（executeScript 里真的执行 probeClickNext）');
 
@@ -504,6 +519,7 @@ module.exports = { createPopupSandbox, runPopup, installAutoNextStub };
   await testDiagPausedVideo();
   await testDiagRateFallback();
   await testDiagScriptingFailure();
+  await testDiagnosticTimeoutAndReentry();
   await testManualClickNext();
   await testTimelineDiagnostics();
   await testStaleCodeDetection();

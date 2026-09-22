@@ -243,7 +243,11 @@ class FakeElement {
     if (!this.listeners.has(type)) this.listeners.set(type, []);
     this.listeners.get(type).push(fn);
   }
-  removeEventListener() {}
+  removeEventListener(type, fn) {
+    if (this.listeners.has(type)) {
+      this.listeners.set(type, this.listeners.get(type).filter(listener => listener !== fn));
+    }
+  }
   dispatchEvent(event) {
     event.target = this;
     if (event.type === 'ratechange') this.rateChangeCount += 1;
@@ -270,6 +274,8 @@ class FakeVideoElement extends FakeElement {
     this.currentTime = 0;
     this.duration = opts.duration === undefined ? 600 : opts.duration;
     this.paused = true;
+    this.muted = false;
+    this.volume = 1;
     this.ended = false;
     this.loop = opts.loop === true;
     this.currentSrc = opts.src || 'https://example.com/media/lesson1.mp4';

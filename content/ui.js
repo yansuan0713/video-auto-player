@@ -18,8 +18,19 @@
   let box = null;
   let hideTimer = null;
 
+  function mount() {
+    if (!host) return;
+    const fullscreen = document.fullscreenElement;
+    // A fullscreen container can host the toast; a native fullscreen video cannot.
+    const parent = fullscreen && !/^(VIDEO|AUDIO|IFRAME)$/.test(fullscreen.tagName)
+      ? fullscreen : (document.body || document.documentElement);
+    if (host.parentElement !== parent) parent.appendChild(host);
+  }
+
+  document.addEventListener('fullscreenchange', mount);
+
   function ensure() {
-    if (box && box.isConnected) return box;
+    if (box && box.isConnected) { mount(); return box; }
     host = document.createElement('div');
     host.id = '__auto_next_toast__';
     host.style.cssText = [
@@ -48,7 +59,7 @@
       'opacity:0'
     ].join(';');
     host.appendChild(box);
-    (document.body || document.documentElement).appendChild(host);
+    mount();
     return box;
   }
 
@@ -84,6 +95,15 @@
   }
 
   // 无论页面是否具备插入条件，都要保证接口存在，调用方不必再判空
-  AutoNext.toast = { show };
+  AutoNext.toast = {
+    show,
+    destroy() {
+      clearTimeout(hideTimer);
+      hideTimer = null;
+      if (host) host.remove();
+      host = null;
+      box = null;
+    }
+  };
 
 })();

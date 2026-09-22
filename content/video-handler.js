@@ -21,7 +21,7 @@
   const DEFAULT_OPTIONS = {
     /** 判定"播到结尾"的容差（秒）—— 用于 ended 事件 */
     endTolerance: 1.5,
-    /** 轮询兜底判定"已经播完"的容差（秒）—— 平台可能停在离结尾几秒处 */
+    /** 结尾附近保护区（秒），防止重播导航中的旧播放器 */
     finishTolerance: 3,
     /** 未触发 ended 时只允许在极贴近终点的位置兜底，避免最后几秒尚未播放就提前跳节 */
     watchdogEndTolerance: 0.25,
@@ -70,6 +70,11 @@
   let options = { ...DEFAULT_OPTIONS };
   let handlers = {};
   let cyclesRun = 0;
+  const playback = AutoNext.createPlaybackController({
+    sourceKey: sourceKeyOf,
+    canContinue: video => AutoNext.settings.enabled && !document.hidden
+      && !video.ended && !video.seeking && !video.error && state.byVideo.has(video)
+  });
 
   const isVideoElement = (node) =>
     typeof HTMLVideoElement !== 'undefined' && node instanceof HTMLVideoElement;
@@ -268,6 +273,7 @@
     const video = event.target;
     if (!isEligible(video)) return;
     const rec = recordOf(video, { create: false });
+    if (!rec) return;
     // 正常结束（ended）和被我们主动暂停的情况不算异常
     if (video.ended) return;
 
@@ -341,7 +347,7 @@
         if (!AutoNext.settings.enabled || document.hidden || !video.paused || video.ended || video.seeking) return;
         if (isAtEnd(video, options.watchdogEndTolerance)) return;
         if (needsFinalSeconds) {
-          tryAutoPlay(video, '补播结尾最后几秒', { allowNearEnd: true });
+          startPlayGrace('补播结尾最后几秒', options.stallRecoveryGraceMs, true);
         } else {
           startPlayGrace('视频中途暂停恢复', options.stallRecoveryGraceMs);
         }
@@ -407,6 +413,7 @@
   }
 
   function onSourceMutated(video) {
+    playback.cancel(video);
     const rec = recordOf(video, { create: false });
     const key = sourceKeyOf(video);
     AutoNext.debug('检测到播放器换源，完整重置上一轮状态');
@@ -441,22 +448,31 @@
   // —— 监听注册 ————————————————————————————————————————————————
 
   function attach(video) {
-    if (!isVideoElement(video) || video.dataset.autoNextBound === '1') return;
+    if (!isVideoElement(video) || state.byVideo.has(video)) return;
     video.dataset.autoNextBound = '1';
+    const rec = recordOf(video);
+    rec.listeners = [];
+    const listen = (type, callback) => {
+      video.addEventListener(type, callback);
+      rec.listeners.push([type, callback]);
+    };
 
-    video.addEventListener('loadedmetadata', onPlaying);
-    video.addEventListener('playing', onPlaying);
-    video.addEventListener('play', onPlaying); // 兜底判定需要知道"真的开始播过"
-    video.addEventListener('timeupdate', onTimeUpdate);
-    video.addEventListener('seeking', onSeeking);
-    video.addEventListener('ended', onEnded);
-    video.addEventListener('pause', onPause); // 暂停取证
-    video.addEventListener('emptied', () => onSourceMutated(video));
+    listen('playing', onPlaying);
+    listen('play', onPlaying);
+    listen('timeupdate', onTimeUpdate);
+    listen('seeking', onSeeking);
+    listen('ended', onEnded);
+    listen('pause', onPause);
+    listen('emptied', () => onSourceMutated(video));
+    listen('error', () => {
+      playback.cancel(video);
+      rec.lastSkipReason = '媒体加载或解码失败';
+      if (AutoNext.addEvent) AutoNext.addEvent('MEDIA_ERROR', { code: video.error && video.error.code });
+    });
 
     // 自动二倍速自己管理 ratechange / loadedmetadata / play 的倍速纠正
-    rate.bind(video);
+    if (rate.isEnabled()) rate.bind(video);
 
-    const rec = recordOf(video);
     rec.sourceKey = sourceKeyOf(video);
     rec.endedBound = true; // 诊断用：确认 ended 监听确实挂上了
 
@@ -475,24 +491,35 @@
     }
 
     // 元数据到达后重新判断一次（首次扫描时 duration 往往还是 NaN）
-    video.addEventListener('loadedmetadata', () => {
+    listen('loadedmetadata', () => {
       if (isEligible(video)) markDetected(video, 'loadedmetadata');
-    }, { once: true });
+    });
 
     // 数据已缓冲至可播放状态时，若仍处于暂停则及时唤醒自动播放
-    video.addEventListener('canplay', () => {
+    listen('canplay', () => {
       if (isEligible(video) && AutoNext.settings && AutoNext.settings.enabled && video.paused && !video.ended) {
-        startPlayGrace('数据就绪(canplay)');
+        startPlayGrace('数据就绪(canplay)', options.playGraceMs,
+          rec.everPlayed && !cycle.running && !cycle.navigated);
       }
-    }, { once: true });
+    });
+  }
+
+  /** Release only listeners owned by this module; the page's listeners stay intact. */
+  function detach(video) {
+    const rec = recordOf(video, { create: false });
+    if (rec) for (const [type, callback] of rec.listeners || []) video.removeEventListener(type, callback);
+    playback.cancel(video);
+    state.byVideo.delete(video);
+    delete video.dataset.autoNextBound;
+    if (state.active === video) state.active = null;
   }
 
   function scan() {
     // 1. 清理已脱离 DOM 的旧视频记录
     for (const [video] of state.byVideo) {
       if (typeof video.isConnected === 'boolean' && !video.isConnected) {
-        state.byVideo.delete(video);
-        if (state.active === video) state.active = null;
+        detach(video);
+        if (rate.unbind) rate.unbind(video);
       }
     }
 
@@ -525,78 +552,6 @@
     return eligible;
   }
 
-  function handleMutedPlaySuccess(video, originalMuted, originalVolume) {
-    AutoNext.log('auto play muted fallback success', '已静音开播绕过浏览器限制');
-    if (AutoNext.addEvent) {
-      AutoNext.addEvent('AUTOPLAY_MUTED_FALLBACK', {
-        currentTime: Number(video.currentTime || 0).toFixed(1),
-        duration: Number(video.duration || 0).toFixed(1)
-      });
-    }
-    toast.show('已为您静音自动开播，点击任意处恢复声音', 'info', 5000);
-
-    const restoreAudio = () => {
-      if (typeof window.removeEventListener === 'function') {
-        window.removeEventListener('click', restoreAudio, true);
-        window.removeEventListener('keydown', restoreAudio, true);
-      }
-      if (!video || (typeof video.isConnected === 'boolean' && !video.isConnected)) return;
-      try {
-        video.muted = originalMuted;
-        if (typeof originalVolume === 'number') {
-          video.volume = originalVolume;
-        }
-        AutoNext.log('检测到用户交互，已恢复声音');
-        toast.show('已恢复声音', 'success', 2000);
-      } catch (e) {
-        AutoNext.debug('恢复音量异常：', e && e.message);
-      }
-    };
-
-    if (typeof window.addEventListener === 'function') {
-      window.addEventListener('click', restoreAudio, { capture: true, once: true });
-      window.addEventListener('keydown', restoreAudio, { capture: true, once: true });
-    }
-  }
-
-  function handlePlayRejection(video, err, rec) {
-    const isNotAllowed = err && (
-      err.name === 'NotAllowedError' ||
-      String(err.message || '').toLowerCase().includes('notallowed') ||
-      String(err.message || '').includes('user didn\'t interact')
-    );
-    AutoNext.warn('自动播放被浏览器拦截：', err && err.name, err && err.message);
-
-    if (!isNotAllowed || video.muted) {
-      toast.show('自动播放被拦截，稍后重试', 'warn');
-      return;
-    }
-
-    // 浏览器策略限制有声自动播放：临时静音重试，并在用户后续任意交互时恢复声音
-    AutoNext.warn('浏览器策略限制有声自动播放，尝试降级为静音开播');
-    const originalMuted = video.muted;
-    const originalVolume = video.volume;
-    video.muted = true;
-
-    try {
-      const retryPromise = video.play();
-      if (retryPromise && typeof retryPromise.then === 'function') {
-        retryPromise.then(() => {
-          handleMutedPlaySuccess(video, originalMuted, originalVolume);
-        }).catch((mutedErr) => {
-          video.muted = originalMuted;
-          AutoNext.warn('静音自动播放仍然被拦截：', mutedErr && mutedErr.name);
-          toast.show('自动播放被拦截，正在重试', 'warn');
-        });
-      } else {
-        handleMutedPlaySuccess(video, originalMuted, originalVolume);
-      }
-    } catch (syncErr) {
-      video.muted = originalMuted;
-      AutoNext.warn('静音重试调用失败：', syncErr && syncErr.message);
-      toast.show('自动播放被拦截，正在重试', 'warn');
-    }
-  }
 
   /**
    * 自动点播放。
@@ -607,7 +562,9 @@
    * 所以用尝试次数计数，而不是"试过就不再试"。
    */
   function tryAutoPlay(video, reason, { allowNearEnd = false } = {}) {
-    if (!isVideoElement(video) || !video.paused) return false;
+    if (!AutoNext.settings.enabled || document.hidden || !isVideoElement(video)
+      || video.isConnected === false || !video.paused || video.error) return false;
+    if (playback.pending(video)) return false;
     const rec = recordOf(video);
     const durationReady = Number.isFinite(video.duration) && video.duration > 0;
     const bootstrapUnready = canBootstrapUnready(video, rec);
@@ -626,19 +583,7 @@
     rate.apply(video, '自动播放前'); // 先设好倍速再播，避免开头几秒按 1.0 播放
     AutoNext.log('auto play', `尝试自动播放（第 ${rec.autoPlayAttempts} 次）`, reason || '');
 
-    let result;
-    try {
-      result = video.play();
-    } catch (err) {
-      handlePlayRejection(video, err, rec);
-      return false;
-    }
-    if (result && typeof result.catch === 'function') {
-      result.catch((err) => {
-        handlePlayRejection(video, err, rec);
-      });
-    }
-    return true;
+    return playback.play(video);
   }
 
   /**
@@ -649,7 +594,7 @@
    * 所以完整保留一小段宽限期：播放中只观察，暂停时才重试；到期立即停手，
    * 不会长期和平台或用户抢控制权。
    */
-  function startPlayGrace(reason, graceMs = options.playGraceMs) {
+  function startPlayGrace(reason, graceMs = options.playGraceMs, allowNearEnd = false) {
     stopPlayGrace();
     const startedAt = Date.now();
     state.playGraceUntil = startedAt + graceMs;
@@ -662,7 +607,7 @@
       if (document.hidden) return;
       // 播放中保持安静但不提前撤掉守护，这样能接住稍后发生的异常暂停。
       if (video && video.paused) {
-        tryAutoPlay(video, `跳转后重试(${Math.round(elapsed / 1000)}s)`);
+        tryAutoPlay(video, `跳转后重试(${Math.round(elapsed / 1000)}s)`, { allowNearEnd });
       }
     };
     tick();
@@ -736,6 +681,9 @@
   }
 
   function resetCycle({ keepSource = true } = {}) {
+    confirmation.cancel();
+    for (const timer of state.timers) clearTimeout(timer);
+    state.timers.clear();
     cycle.running = false;
     cycle.attempts = 0;
     cycle.navigated = false;
@@ -840,75 +788,35 @@
    * 点击按钮并进入 1500~2500ms 短确认窗口：
    * 严禁直接等同于跳转成功，只有在确认真实发生前进后才标记 cycle.navigated = true
    */
+  const confirmation = AutoNext.createNavigationConfirmation({
+    capture: captureNavigationSnapshot,
+    check: checkNavigationConfirmed,
+    click: dom.click
+  });
+
   function startNavigationConfirmation(buttonEl, reason, { onConfirm, onTimeout } = {}) {
-    const snapshot = captureNavigationSnapshot();
+    if (cycle.awaitingConfirmation) return false;
     cycle.awaitingConfirmation = true;
-    const btnText = (dom && dom.ownTextOf ? dom.ownTextOf(buttonEl) : '') || buttonEl.textContent || buttonEl.tagName;
-    AutoNext.debug(`开始监听导航点击生效确认 (${reason}): 「${String(btnText).slice(0, 40)}」`);
-
-    try {
-      dom.click(buttonEl);
-    } catch (err) {
-      cycle.awaitingConfirmation = false;
-      AutoNext.warn('执行按钮点击异常：', err && err.message);
-      if (onTimeout) onTimeout();
-      return;
-    }
-
-    // 检查同步完成情况
-    const immediateConfirm = checkNavigationConfirmed(snapshot);
-    if (immediateConfirm) {
-      cycle.awaitingConfirmation = false;
-      cycle.navigated = true;
-      cycle.navigatedSource = snapshot.videoSource;
-      messenger.reportNavigated();
-      messenger.setBadge('→', '#16a34a');
-      toast.show('已跳转下一节', 'success');
-      if (AutoNext.addEvent) {
-        AutoNext.addEvent('NAVIGATED', { button: String(btnText).slice(0, 40), reason: immediateConfirm });
-      }
-      afterNavigation(`确认跳转成功(${immediateConfirm})`);
-      if (onConfirm) onConfirm(immediateConfirm);
-      return;
-    }
-
-    // 进入 2000ms 短确认窗口，每 250ms 轮询一次
-    const CONFIRM_TIMEOUT_MS = 2000;
-    const CONFIRM_POLL_INTERVAL_MS = 250;
-    const startedAt = Date.now();
-
-    function poll() {
-      if (!cycle.awaitingConfirmation) return;
-      const confirmed = checkNavigationConfirmed(snapshot);
-      if (confirmed) {
+    const btnText = String(dom.ownTextOf(buttonEl) || buttonEl.textContent || buttonEl.tagName).slice(0, 40);
+    return confirmation.start(buttonEl, {
+      onConfirm(confirmed, snapshot) {
         cycle.awaitingConfirmation = false;
         cycle.navigated = true;
         cycle.navigatedSource = snapshot.videoSource;
         messenger.reportNavigated();
         messenger.setBadge('→', '#16a34a');
-        toast.show('已跳转下一节', 'success');
-        if (AutoNext.addEvent) {
-          AutoNext.addEvent('NAVIGATED', { button: String(btnText).slice(0, 40), reason: confirmed });
-        }
+        if (AutoNext.toast) AutoNext.toast.show('已跳转下一节', 'success');
+        if (AutoNext.addEvent) AutoNext.addEvent('NAVIGATED', { button: btnText, reason: confirmed });
         afterNavigation(`确认跳转成功(${confirmed})`);
         if (onConfirm) onConfirm(confirmed);
-        return;
-      }
-
-      if (Date.now() - startedAt >= CONFIRM_TIMEOUT_MS) {
+      },
+      onTimeout() {
         cycle.awaitingConfirmation = false;
-        AutoNext.warn(`点击「${String(btnText).slice(0, 40)}」在 ${CONFIRM_TIMEOUT_MS}ms 内未检测到页面或视频状态变化，判定为未生效 (CLICK_NO_EFFECT)`);
-        if (AutoNext.addEvent) {
-          AutoNext.addEvent('CLICK_NO_EFFECT', { button: String(btnText).slice(0, 40), reason });
-        }
+        AutoNext.warn('点击未在确认窗口内生效 (CLICK_NO_EFFECT)', btnText);
+        if (AutoNext.addEvent) AutoNext.addEvent('CLICK_NO_EFFECT', { button: btnText, reason });
         if (onTimeout) onTimeout();
-        return;
       }
-
-      schedule(poll, CONFIRM_POLL_INTERVAL_MS);
-    }
-
-    schedule(poll, CONFIRM_POLL_INTERVAL_MS);
+    });
   }
 
   function findButtonAndClick() {
@@ -1016,7 +924,6 @@
    */
   function afterRouteChange(reason = '检测到页面路由变化') {
     cycle.running = false;
-    cycle.awaitingConfirmation = false;
     cycle.failedElements = new Set();
     AutoNext.debug(`检测到路由变化，刷新播放器状态但不重新加导航锁 (${reason})`);
     scheduleNavigationRecovery(reason);
@@ -1130,7 +1037,7 @@
    * 所以真实 ended 事件仍然优先，不会重复跳转。
    */
   function startWatchdog() {
-    if (state.watchdogTimer) return;
+    if (state.watchdogTimer !== null) return;
     state.watchdogTimer = setInterval(() => {
       if (!AutoNext.settings.enabled) return;
       if (cycle.running || cycle.navigated) return;
@@ -1169,7 +1076,7 @@
   }
 
   function stopWatchdog() {
-    if (!state.watchdogTimer) return;
+    if (state.watchdogTimer === null) return;
     clearInterval(state.watchdogTimer);
     state.watchdogTimer = null;
     AutoNext.debug('结尾兜底检测已停止');
@@ -1190,12 +1097,12 @@
   }
 
   function destroy() {
-    for (const timer of state.timers) clearTimeout(timer);
-    state.timers.clear();
-    if (state.watchdogTimer) clearInterval(state.watchdogTimer);
+    resetCycle();
+    playback.destroy();
+    if (state.watchdogTimer !== null) clearInterval(state.watchdogTimer);
     state.watchdogTimer = null;
     stopPlayGrace();
-    state.byVideo.clear();
+    for (const video of state.byVideo.keys()) detach(video);
     state.active = null;
   }
 

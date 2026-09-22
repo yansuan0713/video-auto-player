@@ -36,6 +36,8 @@
   let urlCheckTimer = null;
   let started = false;
   let rateReady = false;
+  let pageSuspended = false;
+  let scheduleVideoScan = null;
   let lastScanUrl = location.href;
   const MANUAL_CLICK_GRACE_MS = 2500;
   const INCOMPLETE_TASK_PROMPT = '当前章节还有任务点未完成';
@@ -46,7 +48,8 @@
   // —— 扫描 ——————————————————————————————————————————————————
 
   function scan() {
-    if (!started) return [];
+    if (pageSuspended) return [];
+    if (!started) { rate.applyAll('动态播放器变化'); return []; }
     if (location.href !== lastScanUrl) {
       const safeOld = dom.sanitizeUrl ? dom.sanitizeUrl(lastScanUrl) : lastScanUrl;
       const safeNew = dom.sanitizeUrl ? dom.sanitizeUrl(location.href) : location.href;
@@ -169,6 +172,7 @@
 
   /** 父级要求重新扫描（iframe 换页后父级感知不到） */
   function onRemoteScan() {
+    if (pageSuspended) return;
     AutoNext.debug('收到父级扫描请求');
     scheduleScan(100);
     rate.applyAll('父级请求');
@@ -176,6 +180,7 @@
 
   /** 确认已经跳转，停止本 frame 的重复动作并进入统一收尾与播放恢复 */
   function onRemoteNavigated() {
+    if (!started || pageSuspended) return;
     if (videoHandler && typeof videoHandler.afterNavigation === 'function') {
       videoHandler.afterNavigation('收到远程跳转广播');
     } else {
@@ -206,9 +211,6 @@
           } else {
             videoHandler.resetCycle();
           }
-          setTimeout(() => {
-            AutoNext.debug('手动导航静默期结束');
-          }, MANUAL_CLICK_GRACE_MS);
         }
       },
       true
@@ -256,7 +258,7 @@
     // 只防抖“安排扫描”这一步，不能防抖原始 mutation 列表。
     // 学习通会先插入 <video>，紧接着再插入普通播放器控件；如果后一批无关变更
     // 覆盖了前一批参数，就会永久错过新视频。
-    const scheduleVideoScan = dom.debounce(() => {
+    scheduleVideoScan = dom.debounce(() => {
       AutoNext.debug('MutationObserver：检测到视频节点或播放源变更');
       scheduleScan(200);
     }, 300);
@@ -264,6 +266,11 @@
       let relevant = false;
       let hasAddedElements = false;
       for (const mutation of mutations) {
+        // Removing a video-only subtree must also release the old player records.
+        if (mutation.removedNodes && Array.from(mutation.removedNodes).some(node =>
+          node.nodeType === 1 && (node.tagName === 'VIDEO' || node.querySelector && node.querySelector('video') || node.shadowRoot))) {
+          relevant = true;
+        }
         if (mutation.addedNodes) {
           for (const node of mutation.addedNodes) {
             if (node.nodeType !== 1) continue;
@@ -304,6 +311,8 @@
   }
 
   function stopObserver() {
+    if (scheduleVideoScan) scheduleVideoScan.cancel();
+    scheduleVideoScan = null;
     if (!observer) return;
     observer.disconnect();
     observer = null;
@@ -313,6 +322,7 @@
   // —— 启停 ——————————————————————————————————————————————————
 
   function onEnabled() {
+    if (pageSuspended) return;
     // 幂等保护：重复调用不得叠加 MutationObserver / watchdog / URL 轮询定时器
     if (started) {
       AutoNext.debug('已在启用状态，忽略重复的启用请求');
@@ -340,7 +350,7 @@
   }
 
   function onDisabled() {
-    if (!started && !urlCheckTimer) {
+    if (!started && urlCheckTimer === null) {
       AutoNext.debug('已在停用状态，忽略重复的停用请求');
       return;
     }
@@ -354,7 +364,8 @@
     scanTimer = null;
     clearTimeout(taskDialogTimer);
     taskDialogTimer = null;
-    videoHandler.resetCycle();
+    videoHandler.destroy();
+    if (!pageSuspended && rate.isEnabled()) startObserver();
     AutoNext.log(`自动连播已停用（${frameLabel}）`);
   }
 
@@ -363,6 +374,7 @@
    * @param {{autoNext?: boolean, autoRate?: boolean, autoRate2x?: boolean, playbackRate?: number}} changed
    */
   function onSettingsChanged(changed = {}) {
+    if (pageSuspended) return;
     if ('autoNext' in changed) {
       if (changed.autoNext) onEnabled();
       else onDisabled();
@@ -383,6 +395,8 @@
     if ('customNextSelector' in changed) {
       AutoNext.debug(`站点自定义选择器更新：${changed.customNextSelector}`);
     }
+    if (started || rate.isEnabled()) startObserver();
+    else stopObserver();
   }
 
   async function init() {
@@ -390,9 +404,11 @@
     watchUserNavigation();
     watchSpaNavigation();
     AutoNext.settings.subscribe(onSettingsChanged);
+    if (pageSuspended) return;
     // 自动倍速先落地（它与连播开关互相独立，且要在扫描前就位）
     rate.onToggle(rate.isEnabled());
     rateReady = true;
+    if (rate.isEnabled()) startObserver();
     // 自动跳过非视频页面：只在开关打开时启动
     if (AutoNext.settings.autoSkipNonVideo) skip.start();
     if (AutoNext.settings.enabled) {
@@ -441,8 +457,27 @@
   });
 
   window.addEventListener('pagehide', () => {
+    pageSuspended = true;
+    onDisabled();
     stopObserver();
-    clearInterval(urlCheckTimer);
+    clearTimeout(scanTimer);
+    clearTimeout(taskDialogTimer);
+    scanTimer = taskDialogTimer = null;
+    videoHandler.destroy();
+    skip.stop();
+    if (rate.destroy) rate.destroy();
+    if (toast.destroy) toast.destroy();
+  });
+
+  // A BFCache restore does not re-inject content scripts or rerun init().
+  window.addEventListener('pageshow', () => {
+    if (!pageSuspended) return;
+    pageSuspended = false;
+    rateReady = true;
+    rate.onToggle(rate.isEnabled());
+    if (rate.isEnabled()) startObserver();
+    if (AutoNext.settings.enabled) onEnabled();
+    if (AutoNext.settings.autoSkipNonVideo) skip.start();
   });
 
   AutoNext.setRate = function(val) {

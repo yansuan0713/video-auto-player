@@ -820,17 +820,22 @@ function renderEventLog(results) {
 }
 
 // 诊断检测触发
+let detectionRunning = false;
 async function runDetection() {
+  if (detectionRunning) return;
+  detectionRunning = true;
   if (ui.printStats) ui.printStats.classList.add('busy');
   const original = ui.printStats ? ui.printStats.textContent : '检测当前标签页';
   if (ui.printStats) ui.printStats.textContent = '检测中…';
 
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const [tab] = await withTimeout(chrome.tabs.query({ active: true, currentWindow: true }),
+      MANUAL_CLICK_TIMEOUT_MS, '读取当前标签页超时');
     if (!tab || !tab.id) throw new Error('找不到当前标签页');
 
     const target = { tabId: tab.id, allFrames: true };
-    const results = await chrome.scripting.executeScript({ target, func: probeFrame });
+    const results = await withTimeout(chrome.scripting.executeScript({ target, func: probeFrame }),
+      MANUAL_CLICK_TIMEOUT_MS, '诊断扫描超时，请刷新页面后重试');
     const rows = results
       .slice()
       .sort((a, b) => a.frameId - b.frameId)
@@ -852,6 +857,7 @@ async function runDetection() {
     if (ui.printStats) ui.printStats.textContent = '检测失败';
   } finally {
     setTimeout(() => {
+      detectionRunning = false;
       if (ui.printStats) {
         ui.printStats.textContent = original;
         ui.printStats.classList.remove('busy');
@@ -993,11 +999,13 @@ function renderClickResult(rows) {
 
 if (ui.clickNext) {
   ui.clickNext.addEventListener('click', async () => {
+    if (ui.clickNext.classList.contains('busy')) return;
     ui.clickNext.classList.add('busy');
     const original = ui.clickNext.textContent;
     ui.clickNext.textContent = '执行中…';
     try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const [tab] = await withTimeout(chrome.tabs.query({ active: true, currentWindow: true }),
+        MANUAL_CLICK_TIMEOUT_MS, '读取当前标签页超时');
       if (!tab || !tab.id) throw new Error('找不到当前标签页');
 
       // 第一阶段只读扫描所有 frame，第二阶段只在最佳 frame 中执行一次点击。

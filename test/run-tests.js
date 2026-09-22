@@ -17,18 +17,9 @@ const path = require('path');
 const vm = require('vm');
 const { FakeElement, FakeVideoElement, FakeEvent } = require('./fake-dom');
 const ROOT = path.resolve(__dirname, '..');
-const MODULES = [
-  'content/logger.js',
-  'content/settings.js',
-  'content/dom-utils.js',
-  'content/button-finder.js',
-  'content/frame-messenger.js',
-  'content/skip-controller.js',
-  'content/rate-controller.js',
-  'content/video-handler.js',
-  'content/ui.js',
-  'content/content.js'
-];
+// Match the real MV3 load order; new modules cannot silently be skipped by tests.
+const MODULES = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8'))
+  .content_scripts[0].js;
 
 // ————————————————————————————————————————————————————————————————
 /** 学习通风格的课程页面 */
@@ -299,6 +290,7 @@ async function runTimers(timers, { maxRounds = 30, skipDelay = 0, clock = null }
     if (!pending.length) return;
     pending.sort((a, b) => a.ms - b.ms);
     for (const t of pending) {
+      if (t.cancelled) continue;
       t.done = true;
       if (clock) clock.advance(Math.max(t.ms, 0));
       try {

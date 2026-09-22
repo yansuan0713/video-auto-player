@@ -23,8 +23,8 @@
 
   let options = { ...DEFAULT_OPTIONS };
 
-  /** @type {WeakMap<HTMLVideoElement, object>} */
-  const records = new WeakMap();
+  /** Iterable for explicit teardown; disconnected entries are pruned on scan. */
+  const records = new Map();
 
   /** 安全限制倍速范围（0.1x ~ 16.0x） */
   function clampRate(rate) {
@@ -84,7 +84,7 @@
   }
 
   function clearRetry(rec) {
-    if (rec && rec.retryTimer) {
+    if (rec && rec.retryTimer !== null) {
       clearTimeout(rec.retryTimer);
       rec.retryTimer = null;
     }
@@ -147,7 +147,7 @@
         clearRetry(rec);
         rec.retryTimer = setTimeout(() => {
           rec.retryTimer = null;
-          if (isEnabled() && needsChange(video, getTargetRate())) setRate(video, '(限频后恢复)');
+          if (video.isConnected !== false && isEnabled() && needsChange(video, getTargetRate())) setRate(video, '(限频后恢复)');
         }, delay);
       }
       return;
@@ -167,15 +167,28 @@
     if (rec.bound) return rec;
     rec.bound = true;
 
-    video.addEventListener('loadedmetadata', () => apply(video, 'loadedmetadata'));
-    video.addEventListener('play', () => apply(video, 'play'));
-    video.addEventListener('ratechange', onRateChange);
-    video.addEventListener('emptied', () => {
+    const onEmpty = () => {
+      clearRetry(rec);
       // 换源后播放器常常重置回 1.0，交给后续的 loadedmetadata / play 再设一次
       rec.lastAppliedAt = 0;
       rec.suspendedSourceKey = '';
-    });
+    };
+    rec.listeners = [
+      ['loadedmetadata', () => apply(video, 'loadedmetadata')],
+      ['play', () => apply(video, 'play')],
+      ['ratechange', onRateChange],
+      ['emptied', onEmpty]
+    ];
+    for (const [type, callback] of rec.listeners) video.addEventListener(type, callback);
     return rec;
+  }
+
+  function unbind(video) {
+    const rec = records.get(video);
+    if (!rec) return;
+    clearRetry(rec);
+    for (const [type, callback] of rec.listeners || []) video.removeEventListener(type, callback);
+    records.delete(video);
   }
 
   /**
@@ -215,14 +228,15 @@
    * @param {string} [reason] 日志里标注触发来源：detected / loadedmetadata / play / …
    */
   function apply(video, reason) {
-    if (!video || typeof video.playbackRate !== 'number') return false;
-    bind(video);
+    if (!video || video.isConnected === false || typeof video.playbackRate !== 'number') return false;
     if (!isEnabled()) return false;
+    bind(video);
     return setRate(video, reason);
   }
 
   /** 对当前页面**所有** video 应用一次（首个 video 找不到时兜底用） */
   function applyAll(reason) {
+    for (const video of records.keys()) if (video.isConnected === false) unbind(video);
     if (!isEnabled()) return 0;
     const videos = AutoNext.dom && AutoNext.dom.findVideos
       ? AutoNext.dom.findVideos(document)
@@ -247,6 +261,7 @@
       AutoNext.log(label, changed ? `已应用到 ${changed} 个播放器` : '等待播放器出现');
       return;
     }
+    for (const rec of records.values()) clearRetry(rec);
     const videos = AutoNext.dom && AutoNext.dom.findVideos
       ? AutoNext.dom.findVideos(document)
       : Array.from(document.querySelectorAll('video'));
@@ -261,6 +276,7 @@
       } catch (_) { /* 忽略 */ }
     }
     AutoNext.log('自动倍速已关闭', restored ? `已把 ${restored} 个播放器恢复为 1.0x` : '');
+    for (const video of records.keys()) unbind(video);
   }
 
   /** 动态更新目标速率并立即对播放器应用 */
@@ -277,6 +293,8 @@
   }
 
   AutoNext.rateController = {
+    unbind,
+    destroy() { for (const video of records.keys()) unbind(video); },
     apply,
     applyAll,
     bind,

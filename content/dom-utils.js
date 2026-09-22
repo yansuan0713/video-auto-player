@@ -153,10 +153,12 @@
     /** 防抖 */
     debounce(fn, ms) {
       let timer = null;
-      return function debounced(...args) {
+      function debounced(...args) {
         clearTimeout(timer);
-        timer = setTimeout(() => fn.apply(this, args), ms);
-      };
+        timer = setTimeout(() => { timer = null; fn.apply(this, args); }, ms);
+      }
+      debounced.cancel = () => { clearTimeout(timer); timer = null; };
+      return debounced;
     },
 
     /** 兼容 structuredClone 缺失的环境 */

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "视频自动播放器 (Video Auto Player)",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "description": "辅助网页 HTML5 视频播放与页面内章节导航；仅操作当前页面已有控件，不修改进度或伪造时长。",
   "minimum_chrome_version": "102",
   "permissions": [
@@ -28,12 +28,14 @@
         "content/logger.js",
         "content/settings.js",
         "content/dom-utils.js",
+        "content/ui.js",
         "content/button-finder.js",
         "content/frame-messenger.js",
         "content/skip-controller.js",
         "content/rate-controller.js",
+        "content/playback-controller.js",
+        "content/navigation-confirmation.js",
         "content/video-handler.js",
-        "content/ui.js",
         "content/content.js"
       ],
       "run_at": "document_idle",

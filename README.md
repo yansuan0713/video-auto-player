@@ -1,6 +1,6 @@
 # 视频自动播放器
 
-当前版本：`1.2.4`（Manifest V3）
+当前版本：`1.2.5`（Manifest V3）
 
 一个用于 Chrome / Edge 的网页视频播放辅助扩展。它只在当前页面操作已有的 HTML5 `<video>` 播放器和页面原有的前进控件，适合需要连续播放多个网页视频的场景。
 
@@ -44,7 +44,7 @@
 
 ```text
 视频自动播放器/
-├── manifest.json              # MV3 清单、权限和注入配置 (v1.2.4)
+├── manifest.json              # MV3 清单、权限和注入配置
 ├── background.js              # Service Worker：设置初始化、旧版存储平滑迁移与消息通信
 ├── popup.html                 # 3 Tab 弹窗面板（播放控制、站点规则、诊断日志与脱敏导出）
 ├── popup.js                   # 原生 DOM 挂载、选项卡切换、规则持久化（0 innerHTML CSP 合规）
@@ -56,16 +56,20 @@
 │   ├── frame-messenger.js     # iframe 跨层消息协调、去重防回环与导航状态广播
 │   ├── skip-controller.js     # 可选的无视频页面自动跳过控制器
 │   ├── rate-controller.js     # 任意目标倍速控制、限频防互抢与平台限制自适应降级
-│   ├── video-handler.js       # 播放器发现、状态看门狗、异常暂停取证与自然结束跳转
+│   ├── playback-controller.js # play Promise 去重、源失效与临时静音生命周期
+│   ├── navigation-confirmation.js # 可取消的点击确认事务
+│   ├── video-handler.js       # 播放器注册/释放、结束判定与导航策略
 │   ├── ui.js                  # 页面内状态提示 UI
 │   └── content.js             # 主控制器、SPA 路由增强 (pushState/popstate/hashchange) 与控制台 API
 ├── test/
 │   ├── fake-dom.js            # 测试用轻量 DOM 桩（支持 open/closed Shadow DOM、组合选择器与伪类）
 │   ├── run-tests.js           # 内容脚本行为测试（122 项）
-│   ├── popup-tests.js         # 弹窗面板交互与 CSP 安全测试（53 项）
-│   ├── v12-features-tests.js  # v1.2 特性与同章节多任务点测试（150 项）
+│   ├── popup-tests.js         # 弹窗面板交互与 CSP 安全测试（55 项）
+│   ├── v12-features-tests.js  # v1.2 特性与同章节多任务点测试（152 项）
 │   ├── regression-autoplay-tests.js # 连续播放核心链路回归测试（55 项）
-│   └── e2e-browser-test.js    # Headless Chromium 三层 iframe 端到端测试
+│   ├── e2e-browser-test.js    # Headless Chromium 三层 iframe 端到端测试
+│   ├── lifecycle-tests.js    # 13 个生命周期和异步竞态回归场景
+│   └── lifecycle-browser-test.js # 真实 DOM / 媒体 / 全屏测试
 ├── .github/workflows/test.yml # GitHub Actions 持续集成自动化工作流
 ├── package.json               # 自动化测试脚本与项目描述
 └── README.md
@@ -98,15 +102,17 @@ __AUTO_NEXT__.trySkip()        // 手动检查是否需要跳过无视频页面
 项目附带完整的 Node.js 测试套件，无需启动真实浏览器即可全真模拟 DOM 运行环境：
 
 ```bash
-# 执行全部 380 项 Node 回归断言
+# 执行 Node 回归套件、版本检查与生命周期回归
 npm test
 
 # 分别执行各子套件
 npm run test:content  # 122 项 content script 行为测试
-npm run test:popup    # 53 项 popup 面板与 CSP 测试
-npm run test:v12      # 150 项 v1.2.x 进阶特性与多任务点加固断言
+npm run test:popup    # popup 面板与 CSP 测试
+npm run test:v12      # v1.2.x 进阶特性与多任务点加固断言
 npm run test:regression # 55 项连续播放核心链路回归断言
 npm run test:e2e      # 真实 Chromium 三层 iframe 端到端验证
+npm run test:lifecycle # 销毁/重建、Promise 竞态、缓冲恢复等回归
+npm run test:browser-lifecycle # 真实 DOM、原生媒体重播、用户全屏、加载失败
 ```
 
 ## 权限说明
@@ -120,6 +126,16 @@ npm run test:e2e      # 真实 Chromium 三层 iframe 端到端验证
 扩展不上传任何页面数据，亦不主动发起外部网络请求（免申请 `webNavigation` 等敏感权限，各 frame 探测通过 `scripting.allFrames` 原生支持）。
 
 ## 更新日志
+
+### v1.2.5 (2026-09-22)
+
+- 拆分播放请求与导航确认模块，旧 Promise / 轮询在换源、取消或销毁后不再影响新操作。
+- 显式释放媒体/倍速监听、恢复计时器和临时静音手势监听；支持移除后重插同一播放器与 BFCache 恢复。
+- 修复跨 frame 消息 ID 碰撞、结尾缓冲恢复遗漏、提示模块加载顺序及诊断扫描超时/重复点击。
+- 容器全屏内显示提示，保持用户手动全屏行为；原生视频全屏层中的自定义 DOM 提示仍受浏览器限制。
+- 自动化新增生命周期回归和真实浏览器场景。原有 E2E 允许自动播放，不能证明真实站点的 Autoplay Policy；新增浏览器测试仅注入首次 NotAllowedError，后续播放使用原生 API。
+
+更新时必须重新加载扩展并刷新已有页面：此版本新增两个 content script 文件并调整加载顺序。设置格式和 `__AUTO_NEXT__` 调试入口保持兼容。
 
 ### v1.2.4 (2026-09-22)
 - **结尾防抢跑**：watchdog 只在距离真实结尾不超过 0.25 秒时兜底判定完成；若平台在倒数几秒暂停，会先补播最后几秒，不再提前跳节。

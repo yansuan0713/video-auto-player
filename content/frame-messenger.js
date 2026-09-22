@@ -35,6 +35,10 @@
 
   let lastNavigationAt = 0;
   let msgSeq = 0;
+  // Frame-local sequence alone collides after every iframe reload (all begin at m1).
+  const frameId = typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID() : Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+  const nextId = () => frameId + ':' + (++msgSeq);
   const seenIds = new Set();
   /** 诊断用：本 frame 一共发出/收到过多少次求助 */
   const stats = { requested: 0, received: 0, relays: 0, errors: 0 };
@@ -62,7 +66,7 @@
   function send(target, type, id) {
     if (!target || typeof target.postMessage !== 'function') return false;
     try {
-      target.postMessage({ source: SOURCE, type, id: id || `m${(msgSeq += 1)}` }, '*');
+      target.postMessage({ source: SOURCE, type, id: id || nextId() }, '*');
       return true;
     } catch (err) {
       stats.errors += 1;
@@ -77,7 +81,7 @@
    */
   function notifyUp(type, id) {
     let delivered = 0;
-    const msgId = id || `m${(msgSeq += 1)}`;
+    const msgId = id || nextId();
     markSeen(msgId);
     if (!messenger.isTop) {
       if (send(window.parent, type, msgId)) delivered += 1;
@@ -124,7 +128,7 @@
      */
     requestHelp() {
       stats.requested += 1;
-      const ownId = `m${(msgSeq += 1)}`;
+      const ownId = nextId();
       markSeen(ownId);
       const delivered = notifyUp(TYPES.VIDEO, ownId);
       AutoNext.warn('已请求其他 frame 帮忙找“下一节”', `投递到 ${delivered} 个相邻 frame`,
@@ -135,7 +139,7 @@
     /** 广播“正在跳转中”，锁定所有 frame 防止并发竞争 */
     reportNavigating(id) {
       lastNavigationAt = Date.now();
-      const own = id || `m${(msgSeq += 1)}`;
+      const own = id || nextId();
       markSeen(own);
       messenger.broadcast(TYPES.NAVIGATING, own);
       messenger.notifyParent(TYPES.NAVIGATING, own);
@@ -144,7 +148,7 @@
     /** 广播“已经跳转了”，让其他 frame 停下来 */
     reportNavigated(id) {
       lastNavigationAt = Date.now();
-      const own = id || `m${(msgSeq += 1)}`;
+      const own = id || nextId();
       markSeen(own);
       messenger.broadcast(TYPES.NAVIGATED, own);
       messenger.notifyParent(TYPES.NAVIGATED, own);

@@ -1158,12 +1158,15 @@ async function testClickDeduplicationAndGrace() {
 
     // 在 2500ms 交接检查到期前，模拟用户手动点击导航，触发 3000ms 静默保护期
     sandbox.window.AutoNext.videoHandler.notifyManualNavigation(3000);
+    const requestsAfterCancel = sandbox.window.AutoNext.messenger.stats.requested;
 
     // 运行并消耗后续所有定时器（包含 2500ms 的 checkHandoffResult 定时器）
     await runTimers(timers, { maxRounds: 5 });
 
     const statsAfterTimer = sandbox.window.AutoNext.videoHandler.stats();
-    check('处于手动导航静默期时交接回音检查放弃重试 (handoffCount 未增加)', statsAfterTimer.cycle.handoffCount === 1);
+    check('手动导航取消旧交接任务且没有再次求助',
+      statsAfterTimer.cycle.handoffCount === 0
+      && sandbox.window.AutoNext.messenger.stats.requested === requestsAfterCancel);
     check('处于手动导航静默期时跳转循环保持停止 (!cycle.running)', !statsAfterTimer.cycle.running);
   }
 
