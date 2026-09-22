@@ -23,6 +23,8 @@
     endTolerance: 1.5,
     /** 轮询兜底判定"已经播完"的容差（秒）—— 平台可能停在离结尾几秒处 */
     finishTolerance: 3,
+    /** 未触发 ended 时只允许在极贴近终点的位置兜底，避免最后几秒尚未播放就提前跳节 */
+    watchdogEndTolerance: 0.25,
     /** 视频至少要播放过这么久，才算"真的看过"（防止拖到结尾被当成看完） */
     minPlayedSeconds: 3,
     /** 时长太短的元素直接忽略（广告、动图预览） */
@@ -201,7 +203,7 @@
     // 从没真正播放过的视频不能算"看完"（防止页面刚加载就被当成结束）
     const rec = recordOf(video, { create: false });
     if (rec && !rec.everPlayed) return false;
-    return isAtEnd(video, options.finishTolerance);
+    return isAtEnd(video, options.watchdogEndTolerance);
   }
 
   // —— 事件处理 ————————————————————————————————————————————————
@@ -323,10 +325,11 @@
 
     // 自动连播模式下，平台或播放器可能在任意位置暂停（真实现场见 43s / 116s）。
     // 先延迟一次，让缓冲/播放器内部状态稳定；真正播放仍由有上限的重试窗口接手。
+    const needsFinalSeconds = nearEnd && !isAtEnd(video, options.watchdogEndTolerance);
     const shouldRecoverMidPlayback = AutoNext.settings.enabled
       && rec.everPlayed
       && !document.hidden
-      && !nearEnd
+      && (!nearEnd || needsFinalSeconds)
       && !video.seeking
       && !cycle.running
       && !cycle.navigated;
@@ -336,8 +339,12 @@
       schedule(() => {
         rec.resumeScheduled = false;
         if (!AutoNext.settings.enabled || document.hidden || !video.paused || video.ended || video.seeking) return;
-        if (isAtEnd(video, options.finishTolerance)) return;
-        startPlayGrace('视频中途暂停恢复', options.stallRecoveryGraceMs);
+        if (isAtEnd(video, options.watchdogEndTolerance)) return;
+        if (needsFinalSeconds) {
+          tryAutoPlay(video, '补播结尾最后几秒', { allowNearEnd: true });
+        } else {
+          startPlayGrace('视频中途暂停恢复', options.stallRecoveryGraceMs);
+        }
       }, options.stallRecoveryDelayMs);
     }
 
@@ -599,7 +606,7 @@
    * 一旦只试一次，视频就会永久卡在暂停状态 —— 表现为"视频播到一半停住不动"。
    * 所以用尝试次数计数，而不是"试过就不再试"。
    */
-  function tryAutoPlay(video, reason) {
+  function tryAutoPlay(video, reason, { allowNearEnd = false } = {}) {
     if (!isVideoElement(video) || !video.paused) return false;
     const rec = recordOf(video);
     const durationReady = Number.isFinite(video.duration) && video.duration > 0;
@@ -608,7 +615,8 @@
     if (!durationReady && !bootstrapUnready) return false;
     // 已结束、正在拖动或停在结尾附近时不能重播上一节。
     // SPA 换页期间旧播放器可能仍留在 DOM 中，误播它会与新播放器争抢状态。
-    if (video.ended || video.seeking || isAtEnd(video, options.finishTolerance)) return false;
+    const endTolerance = allowNearEnd ? options.watchdogEndTolerance : options.finishTolerance;
+    if (video.ended || video.seeking || isAtEnd(video, endTolerance)) return false;
     // 缓冲中（HAVE_METADATA / HAVE_NOTHING）先等数据恢复，由宽限期的下一轮再试。
     if (typeof video.readyState === 'number' && video.readyState < 2 && !bootstrapUnready) return false;
     if (rec.autoPlayAttempts >= options.maxAutoPlayAttempts) return false;
@@ -704,6 +712,27 @@
     cycle.lastEndedAt = now;
     resetCycle({ keepSource: true });
     AutoNext.debug(`已生效手动导航静默保护期，持续 ${graceMs}ms`);
+  }
+
+  /**
+   * 学习通拒绝跳节并提示“当前章节还有任务点未完成”时，撤销本轮导航状态。
+   * 弹窗的“去学习”会负责把页面带回当前任务；这里只清理插件自己的锁与去重标记。
+   */
+  function recoverFromIncompleteTaskPrompt() {
+    resetCycle({ keepSource: true });
+    const video = state.active;
+    const rec = video ? recordOf(video, { create: false }) : null;
+    if (rec) {
+      rec.triggered = false;
+      rec.finishedByWatchdog = false;
+      rec.finishHits = 0;
+      rec.resumeScheduled = false;
+      rec.lastSkipReason = '平台提示当前章节仍有未完成任务点，已返回学习';
+    }
+    if (AutoNext.addEvent) {
+      AutoNext.addEvent('TASK_INCOMPLETE_RECOVERY', { action: 'go-study' });
+    }
+    AutoNext.warn('平台提示当前章节仍有未完成任务点，已撤销跳转并返回学习');
   }
 
   function resetCycle({ keepSource = true } = {}) {
@@ -947,15 +976,8 @@
     schedule(attemptNext, 500);
   }
 
-  /** 点击“下一节”后都会走到这里：等新播放器加载出来，补一次倍速 + 必要时自动播放 */
-  function afterNavigation(reason = '跳转到下一节之后') {
-    cycle.running = false;
-    cycle.navigated = true;
-    if (!cycle.navigatedSource && state.active) {
-      cycle.navigatedSource = sourceKeyOf(state.active);
-    }
-    AutoNext.debug(`本轮跳转流程结束，等待下一节播放器加载 (${reason})`);
-
+  /** 导航或路由变化后，分三次等待播放器稳定并恢复倍速/播放。 */
+  function scheduleNavigationRecovery(reason) {
     const runRecovery = (stage) => {
       if (!AutoNext.settings.enabled) return;
       const eligible = (AutoNext.videoHandler && typeof AutoNext.videoHandler.scan === 'function')
@@ -974,6 +996,30 @@
     schedule(() => runRecovery('quick'), 300);
     schedule(() => runRecovery('medium'), 1200);
     schedule(() => runRecovery('final'), 2500);
+  }
+
+  /** 点击“下一节”并确认生效后：加锁，等待新视频/新源 playing 再解锁。 */
+  function afterNavigation(reason = '跳转到下一节之后') {
+    cycle.running = false;
+    cycle.navigated = true;
+    if (!cycle.navigatedSource && state.active) {
+      cycle.navigatedSource = sourceKeyOf(state.active);
+    }
+    AutoNext.debug(`本轮跳转流程结束，等待下一节播放器加载 (${reason})`);
+    scheduleNavigationRecovery(reason);
+  }
+
+  /**
+   * 被动观察到 SPA 地址变化时只做恢复扫描，不得重新设置导航锁。
+   * URL 轮询常常晚于新视频的 playing；若此处复用 afterNavigation()，就会把已经
+   * 解锁的新视频再次锁住，导致它播完后 triggerNextLesson 被永久忽略。
+   */
+  function afterRouteChange(reason = '检测到页面路由变化') {
+    cycle.running = false;
+    cycle.awaitingConfirmation = false;
+    cycle.failedElements = new Set();
+    AutoNext.debug(`检测到路由变化，刷新播放器状态但不重新加导航锁 (${reason})`);
+    scheduleNavigationRecovery(reason);
   }
 
   /**
@@ -1249,7 +1295,9 @@
     attemptNext,
     markDetected,
     notifyManualNavigation,
+    recoverFromIncompleteTaskPrompt,
     afterNavigation,
+    afterRouteChange,
     startNavigationConfirmation,
     captureNavigationSnapshot,
     checkNavigationConfirmed,

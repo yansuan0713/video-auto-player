@@ -53,10 +53,13 @@ function createPopupSandbox({ tabUrl = 'https://mooc1.chaoxing.com/mycourse/stud
    * MV3 的做法是把函数 toString 后注入目标 frame，这里也照做——
    * 这样才能覆盖 probeFrame / probeClickNext 的真实逻辑，而不是绕过它们。
    */
-  const executeScript = async ({ func }) => {
+  const executeScript = async ({ target = {}, func }) => {
     if (failScripting) throw new Error(failScripting);
     if (typeof func !== 'function') throw new Error('executeScript 需要函数');
-    const frameIds = frames && frames.length ? frames.map((f) => f.frameId) : [0];
+    const availableFrameIds = frames && frames.length ? frames.map((f) => f.frameId) : [0];
+    const frameIds = Array.isArray(target.frameIds)
+      ? availableFrameIds.filter((frameId) => target.frameIds.includes(frameId))
+      : (target.allFrames ? availableFrameIds : [0]);
     return frameIds.map((frameId) => ({
       frameId,
       result: vm.runInContext(`(${func.toString()})()`, context, { filename: `injected-frame-${frameId}` })
@@ -147,7 +150,8 @@ function installAutoNextStub(sandbox, { foundScore = 0, foundText = '', candidat
     }),
     videoHandler: { diagnostics: () => diag },
     candidates: () => candidates,
-    clickNext: () => { calls.clickNext += 1; return button; }
+    clickNext: () => { calls.clickNext += 1; return button; },
+    manualNavigateNext: () => { calls.clickNext += 1; return button; }
   };
   sandbox.window.__AUTO_NEXT__.buttonFinder = {
     findNextButton: () => { calls.findNextButton += 1; return button; }
@@ -324,6 +328,32 @@ async function testManualClickNext() {
     await runClickNext(byId);
     const text = diagText(byId);
     check('未注入时提示没有 content script', text.includes('没有注入 content script'), text.slice(0, 300));
+  }
+
+  // 6.4 多 frame 同时存在候选时只能挑一个 frame 点击，不能 allFrames 全点
+  {
+    const { sandbox, byId } = createPopupSandbox({
+      frames: [{ frameId: 0 }, { frameId: 21 }, { frameId: 34 }]
+    });
+    runPopup(sandbox);
+    const calls = installAutoNextStub(sandbox, { foundScore: 188, foundText: '下一节' });
+    await runClickNext(byId);
+
+    check('多 frame 场景只执行一次实际点击', calls.clickNext === 1, String(calls.clickNext));
+  }
+
+  // 6.5 executeScript 永不返回时必须超时收尾，不能让按钮永久“执行中…”
+  {
+    const { sandbox, byId } = createPopupSandbox({ frames: [{ frameId: 0 }] });
+    sandbox.chrome.scripting.executeScript = () => new Promise(() => {});
+    // 只在此测试中把 popup 内的超时计时器压缩到下一轮事件循环。
+    sandbox.setTimeout = (fn) => { setImmediate(fn); return 1; };
+    sandbox.clearTimeout = () => {};
+    runPopup(sandbox);
+    await runClickNext(byId);
+
+    check('脚本调用挂起后按钮会退出 busy 状态', !byId.get('clickNext').classList.contains('busy'));
+    check('脚本调用挂起后给出超时提示', diagText(byId).includes('超时'), diagText(byId));
   }
 }
 

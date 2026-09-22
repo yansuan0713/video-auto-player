@@ -1182,7 +1182,7 @@ async function testClickDeduplicationAndGrace() {
 // 主执行器
 // ————————————————————————————————————————————————————————————————
 (async () => {
-  console.log('Video Auto Player v1.2.2 全量测试套件');
+  console.log('Video Auto Player v1.2.4 全量测试套件');
   console.log('='.repeat(60));
 
   await testSettingsMigration();

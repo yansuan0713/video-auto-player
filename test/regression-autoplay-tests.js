@@ -1,5 +1,5 @@
 /**
- * test/regression-autoplay-tests.js —— 核心链路回归测试 (v1.2.3)
+ * test/regression-autoplay-tests.js —— 核心链路回归测试 (v1.2.4)
  *
  * 专门针对用户反馈的真实使用回归场景：
  *   A. 跨 frame 完成导航后播放器重新扫描并自动播放
@@ -396,6 +396,51 @@ async function testOldVideoPlayingDoesNotPrematurelyUnlock() {
 }
 
 // ————————————————————————————————————————————————————————————————
+// G2. 新视频已经开始播放后，迟到的 URL 轮询不能重新加回导航锁
+// 测试场景：A 播完跳转 -> B 换源并 playing 解锁 -> 5s URL 轮询才发现地址变化
+// -> B 播完后仍必须继续跳到下一节。
+// ————————————————————————————————————————————————————————————————
+async function testLateUrlPollDoesNotRelockActiveVideo() {
+  console.log('\n[Suite G2] 迟到的 URL 轮询不重新锁住已播放的新视频');
+
+  const page = buildLessonPage({ withNav: true });
+  const { sandbox, timers, intervals, windowMock, clock } = createSandbox({
+    page,
+    storage: { autoNext: true, autoRate: true, autoRate2x: true },
+    isTop: true
+  });
+  const api = loadExtension(sandbox);
+  await runTimers(timers);
+
+  page.video.src = 'https://mooc.chaoxing.com/media/videoA.mp4';
+  api.videoHandler.scan();
+  page.video.watch(30);
+  page.video.finish();
+  await runTimers(timers);
+  check('视频 A 正常触发第一次跳转', page.state.clicked.filter((c) => c === 'next').length === 1);
+
+  // 平台先换源并开始播放，content.js 的 5 秒 URL 轮询随后才观察到地址变化。
+  windowMock.location.href = 'https://mooc1.chaoxing.com/mycourse/studentstudy?chapterId=2';
+  page.video.src = 'https://mooc.chaoxing.com/media/videoB.mp4';
+  page.video.currentTime = 0;
+  page.video.ended = false;
+  page.video.paused = false;
+  page.video.dispatchEvent(new FakeEvent('emptied'));
+  page.video.dispatchEvent(new FakeEvent('playing'));
+  check('新视频 B 开始播放后已解除旧导航锁', api.videoHandler.stats().cycle.navigated === false);
+
+  tickIntervals(intervals, 1);
+  await runTimers(timers);
+  check('迟到的 URL 轮询没有重新锁住视频 B', api.videoHandler.stats().cycle.navigated === false);
+
+  clock.advance(5000);
+  page.video.watch(30);
+  page.video.finish();
+  await runTimers(timers);
+  check('视频 B 播完后仍能触发第二次跳转', page.state.clicked.filter((c) => c === 'next').length === 2);
+}
+
+// ————————————————————————————————————————————————————————————————
 // H. 超星 #coursetree 树形目录结构导航与 .ans-job-icon 隔离
 // 验证：
 // 1. 在 #coursetree 树形结构下，当前在第 2 节，能正确选中第 3 节 (currentIndex + 1)
@@ -648,7 +693,7 @@ async function testAutoplayMutedFallbackLifecycle() {
 
 async function runAll() {
   console.log('============================================================');
-  console.log('video-auto-player 核心链路回归测试套件 (v1.2.3)');
+  console.log('video-auto-player 核心链路回归测试套件 (v1.2.4)');
   console.log('============================================================');
 
   await testCrossFrameNavigationRecovery();
@@ -658,6 +703,7 @@ async function runAll() {
   await testFormWrappedNextButton();
   await testWatchdogDoesNotRetriggerOnOldVideo();
   await testOldVideoPlayingDoesNotPrematurelyUnlock();
+  await testLateUrlPollDoesNotRelockActiveVideo();
   await testChaoxingCoursetreeNavigationAndJobIconIsolation();
   await testNavigationConfirmationAndClickNoEffect();
   await testAutoplayMutedFallbackLifecycle();

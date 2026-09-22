@@ -903,6 +903,29 @@ async function testWatchdogFinish() {
       JSON.stringify(api.videoHandler.diagnostics()));
   }
 
+  // 7.1b 距离结尾仍有数秒时先恢复播放，绝不能提前跳转
+  {
+    const page = buildLessonPage({});
+    const { timers, intervals } = await scaffold(page);
+
+    page.video.watch(30);
+    page.video.currentTime = page.video.duration - 2.5;
+    page.video.paused = true;
+    page.video.ended = false;
+    page.video.readyState = 4;
+    page.video.dispatchEvent(new FakeEvent('pause'));
+
+    tickIntervals(intervals, 4);
+    await runTimers(timers);
+
+    check('距离结尾仍有 2.5 秒且 ended 未触发时绝不提前点击下一节',
+      page.state.clicked.length === 0,
+      JSON.stringify(page.state.clicked));
+    check('结尾前的异常暂停会恢复播放以完成最后几秒',
+      page.video.paused === false,
+      `paused=${page.video.paused}`);
+  }
+
   // 7.2 正常播放中绝不能被兜底误触发
   {
     const page = buildLessonPage({});
@@ -1444,6 +1467,46 @@ async function testPauseForensics() {
   }
 }
 
+async function testIncompleteTaskDialogRecovery() {
+  console.log('\n[11] 未完成任务点弹窗：返回学习并撤销错误跳转');
+
+  const page = buildLessonPage({ withNav: true });
+  page.state.simulateNavigation = false;
+  const box = createSandbox({ page, storage: { autoNext: true } });
+  const api = loadExtension(box.sandbox);
+  await runTimers(box.timers);
+
+  page.video.watch(30);
+  page.video.finish();
+  await runTimers(box.timers, { maxRounds: 1, clock: box.clock });
+
+  const dialog = page.body.append(new FakeElement('div', {
+    class: 'task-point-dialog',
+    attrs: { role: 'dialog' }
+  }));
+  dialog.append(new FakeElement('div', { text: '当前章节还有任务点未完成，是否去完成？' }));
+  const goStudy = dialog.append(new FakeElement('button', { text: '去学习', attrs: { type: 'button' } }));
+  const nextLesson = dialog.append(new FakeElement('button', { text: '下一节', attrs: { type: 'button' } }));
+  let goStudyClicks = 0;
+  let nextLessonClicks = 0;
+  goStudy.addEventListener('click', () => { goStudyClicks += 1; });
+  nextLesson.addEventListener('click', () => { nextLessonClicks += 1; });
+
+  box.mutationObservers.forEach((observer) => observer.callback([{
+    type: 'childList',
+    addedNodes: [dialog],
+    target: page.body
+  }]));
+  await runTimers(box.timers, { clock: box.clock });
+
+  const diag = api.videoHandler.diagnostics();
+  check('识别提示后只点击“去学习”一次', goStudyClicks === 1, `goStudy=${goStudyClicks}`);
+  check('绝不点击弹窗里的“下一节”', nextLessonClicks === 0, `next=${nextLessonClicks}`);
+  check('返回学习后撤销本轮导航锁与已触发标记',
+    diag.cycle.running === false && diag.cycle.navigated === false && diag.triggered === false,
+    JSON.stringify(diag.cycle));
+}
+
 async function runAllTests() {
   console.log('AutoNext content script 行为测试');
   console.log('='.repeat(60));
@@ -1457,6 +1520,7 @@ async function runAllTests() {
   await testSkipNonVideo();
   await testAutoPlayRetry();
   await testPauseForensics();
+  await testIncompleteTaskDialogRecovery();
 
   const failed = results.filter((r) => !r.ok);
   console.log('\n' + '='.repeat(60));

@@ -32,11 +32,14 @@
 
   let observer = null;
   let scanTimer = null;
+  let taskDialogTimer = null;
   let urlCheckTimer = null;
   let started = false;
   let rateReady = false;
   let lastScanUrl = location.href;
   const MANUAL_CLICK_GRACE_MS = 2500;
+  const INCOMPLETE_TASK_PROMPT = '当前章节还有任务点未完成';
+  const handledIncompleteDialogs = new WeakSet();
 
   const frameLabel = messenger.isTop ? '顶层页面 (top)' : 'iframe 子页面';
 
@@ -49,8 +52,8 @@
       const safeNew = dom.sanitizeUrl ? dom.sanitizeUrl(location.href) : location.href;
       AutoNext.debug(`页面 URL 变化：${safeOld} → ${safeNew}（SPA 换页）`);
       lastScanUrl = location.href;
-      if (videoHandler && typeof videoHandler.afterNavigation === 'function') {
-        videoHandler.afterNavigation('SPA换页');
+      if (videoHandler && typeof videoHandler.afterRouteChange === 'function') {
+        videoHandler.afterRouteChange('SPA换页');
       } else {
         videoHandler.resetCycle();
       }
@@ -60,6 +63,51 @@
   }
 
   const throttledScan = dom.throttle(scan, SCAN_THROTTLE_MS);
+
+  /**
+   * 学习通在任务点尚未完成时会用弹窗拦截“下一节”。
+   * 只对截图中这条精确提示执行“去学习”，绝不点击同弹窗里的“下一节”。
+   */
+  function handleIncompleteTaskDialog() {
+    if (!started) return false;
+    const buttons = Array.from(document.querySelectorAll('button, a, [role="button"], input[type="button"]'));
+    for (const button of buttons) {
+      if (dom.normalize(dom.textOf(button)) !== '去学习') continue;
+      if (!dom.isVisible(button) || dom.isDisabled(button)) continue;
+
+      let container = button;
+      let matched = null;
+      for (let depth = 0; container && depth < 8; depth += 1) {
+        if (dom.normalize(container.textContent).includes(INCOMPLETE_TASK_PROMPT)) {
+          matched = container;
+          break;
+        }
+        container = container.parentElement;
+      }
+      if (!matched || handledIncompleteDialogs.has(matched)) continue;
+
+      handledIncompleteDialogs.add(matched);
+      if (videoHandler && typeof videoHandler.recoverFromIncompleteTaskPrompt === 'function') {
+        videoHandler.recoverFromIncompleteTaskPrompt();
+      } else {
+        videoHandler.resetCycle();
+      }
+      dom.click(button);
+      AutoNext.log('检测到未完成任务点提示，已点击“去学习”返回当前任务');
+      toast.show('当前任务点尚未完成，已返回继续学习', 'warn', 3500);
+      scheduleScan(300);
+      return true;
+    }
+    return false;
+  }
+
+  function scheduleIncompleteTaskDialogCheck(delay = 50) {
+    clearTimeout(taskDialogTimer);
+    taskDialogTimer = setTimeout(() => {
+      taskDialogTimer = null;
+      handleIncompleteTaskDialog();
+    }, delay);
+  }
 
   function scheduleScan(delay = 300) {
     clearTimeout(scanTimer);
@@ -177,8 +225,8 @@
         AutoNext.debug(`SPA 路由切换检测：${safeOld} → ${safeNew}`);
         lastScanUrl = location.href;
         scheduleScan(150);
-        if (videoHandler && typeof videoHandler.afterNavigation === 'function') {
-          videoHandler.afterNavigation('SPA路由切换');
+        if (videoHandler && typeof videoHandler.afterRouteChange === 'function') {
+          videoHandler.afterRouteChange('SPA路由切换');
         } else {
           videoHandler.resetCycle();
         }
@@ -214,10 +262,12 @@
     }, 300);
     const onMutate = (mutations) => {
       let relevant = false;
+      let hasAddedElements = false;
       for (const mutation of mutations) {
         if (mutation.addedNodes) {
           for (const node of mutation.addedNodes) {
             if (node.nodeType !== 1) continue;
+            hasAddedElements = true;
             if (node.tagName === 'VIDEO' || node.tagName === 'SOURCE' || node.tagName === 'IFRAME' || (node.querySelector && (node.querySelector('video') || node.querySelector('iframe'))) || node.shadowRoot) {
               relevant = true;
               break;
@@ -237,6 +287,9 @@
       }
       if (relevant) {
         scheduleVideoScan();
+      }
+      if (hasAddedElements) {
+        scheduleIncompleteTaskDialogCheck();
       }
     };
 
@@ -277,8 +330,8 @@
         AutoNext.debug(`轮询检测到页面 URL 变化：${safeOld} → ${safeNew}`);
         lastScanUrl = location.href;
         scheduleScan(100);
-        if (videoHandler && typeof videoHandler.afterNavigation === 'function') {
-          videoHandler.afterNavigation('轮询URL变更');
+        if (videoHandler && typeof videoHandler.afterRouteChange === 'function') {
+          videoHandler.afterRouteChange('轮询URL变更');
         } else {
           videoHandler.resetCycle();
         }
@@ -299,6 +352,8 @@
     urlCheckTimer = null;
     clearTimeout(scanTimer);
     scanTimer = null;
+    clearTimeout(taskDialogTimer);
+    taskDialogTimer = null;
     videoHandler.resetCycle();
     AutoNext.log(`自动连播已停用（${frameLabel}）`);
   }
@@ -419,6 +474,13 @@
     scan: () => scan(),
     candidates: (sel) => AutoNext.buttonFinder.findCandidates(sel).slice(0, 10),
     clickNext: (sel) => AutoNext.buttonFinder.clickNextButton(40, sel),
+    /** popup 手动跳转也走生效确认，避免非视频页点击后留下错误导航状态。 */
+    manualNavigateNext(sel) {
+      const found = AutoNext.buttonFinder.findNextButton(40, sel);
+      if (!found) return null;
+      videoHandler.startNavigationConfirmation(found.el, 'popup手动跳转');
+      return found;
+    },
     events: () => (AutoNext.getEvents ? AutoNext.getEvents() : []),
     /** 手动触发一次“跳过当前非视频页面”的判断（用于临时验证） */
     trySkip() {

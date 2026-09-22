@@ -855,7 +855,19 @@ if (ui.refreshDiagBtn) ui.refreshDiagBtn.addEventListener('click', runDetection)
 // 手动点“下一节”
 // ————————————————————————————————————————————————————————————————
 
-function probeClickNext() {
+const MANUAL_CLICK_TIMEOUT_MS = 4000;
+
+function withTimeout(promise, timeoutMs, message) {
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer !== null) clearTimeout(timer);
+  });
+}
+
+function probeNextCandidate() {
   const api = window.__AUTO_NEXT__;
   if (!api) return { injected: false, frame: window.top === window ? '顶层页面' : 'iframe', url: location.href, candidates: [] };
 
@@ -887,7 +899,41 @@ function probeClickNext() {
 
   result.text = found.text || '(无文字)';
   result.score = found.score;
-  api.clickNext();
+  result.found = true;
+  return result;
+}
+
+function probeClickNext() {
+  const api = window.__AUTO_NEXT__;
+  if (!api) return { injected: false, frame: window.top === window ? '顶层页面' : 'iframe', url: location.href, candidates: [] };
+
+  let found = null;
+  try {
+    found = api.buttonFinder.findNextButton();
+  } catch (err) {
+    console.warn('[AutoNext] findNextButton 抛错：', err);
+  }
+
+  const result = {
+    injected: true,
+    frame: window.top === window ? '顶层页面' : 'iframe',
+    url: location.href,
+    clicked: false,
+    found: !!found,
+    text: found ? (found.text || '(无文字)') : '',
+    score: found ? found.score : 0,
+    candidates: []
+  };
+  try {
+    result.candidates = api.candidates().slice(0, 3).map((c) => ({ text: c.text, tag: c.el.tagName, score: c.score }));
+  } catch (_) {}
+  if (!found) return result;
+
+  if (typeof api.manualNavigateNext === 'function') {
+    api.manualNavigateNext();
+  } else {
+    api.clickNext();
+  }
   result.clicked = true;
   return result;
 }
@@ -942,12 +988,42 @@ if (ui.clickNext) {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab || !tab.id) throw new Error('找不到当前标签页');
 
-      const target = { tabId: tab.id, allFrames: true };
-      const results = await chrome.scripting.executeScript({ target, func: probeClickNext });
-      const rows = results
+      // 第一阶段只读扫描所有 frame，第二阶段只在最佳 frame 中执行一次点击。
+      // 不能把点击函数 allFrames 注入，否则顶层和多个 iframe 会同时点“下一节”。
+      const scanTarget = { tabId: tab.id, allFrames: true };
+      const scanned = await withTimeout(
+        chrome.scripting.executeScript({ target: scanTarget, func: probeNextCandidate }),
+        MANUAL_CLICK_TIMEOUT_MS,
+        '扫描页面 frame 超时，请刷新课程页面后重试'
+      );
+      let rows = scanned
         .slice()
         .sort((a, b) => a.frameId - b.frameId)
         .map(({ frameId, result }) => ({ frameId, result: result || null }));
+
+      const chosen = rows
+        .filter((row) => row.result && row.result.found)
+        .sort((a, b) => {
+          const scoreDiff = Number(b.result.score || 0) - Number(a.result.score || 0);
+          if (scoreDiff) return scoreDiff;
+          if (a.frameId === 0) return -1;
+          if (b.frameId === 0) return 1;
+          return a.frameId - b.frameId;
+        })[0];
+
+      if (chosen) {
+        const clickTarget = { tabId: tab.id, frameIds: [chosen.frameId] };
+        const clicked = await withTimeout(
+          chrome.scripting.executeScript({ target: clickTarget, func: probeClickNext }),
+          MANUAL_CLICK_TIMEOUT_MS,
+          '点击“下一节”超时；页面可能正在换页，请稍后重试'
+        );
+        const clickResult = clicked && clicked[0] ? clicked[0].result : null;
+        rows = rows.map((row) => row.frameId === chosen.frameId
+          ? { frameId: row.frameId, result: clickResult || row.result }
+          : row);
+      }
+
       renderClickResult(rows);
       ui.clickNext.textContent = '✓ 已执行';
     } catch (err) {

@@ -1,6 +1,6 @@
 # 视频自动播放器
 
-当前版本：`1.2.3`（Manifest V3）
+当前版本：`1.2.4`（Manifest V3）
 
 一个用于 Chrome / Edge 的网页视频播放辅助扩展。它只在当前页面操作已有的 HTML5 `<video>` 播放器和页面原有的前进控件，适合需要连续播放多个网页视频的场景。
 
@@ -44,7 +44,7 @@
 
 ```text
 视频自动播放器/
-├── manifest.json              # MV3 清单、权限和注入配置 (v1.2.3)
+├── manifest.json              # MV3 清单、权限和注入配置 (v1.2.4)
 ├── background.js              # Service Worker：设置初始化、旧版存储平滑迁移与消息通信
 ├── popup.html                 # 3 Tab 弹窗面板（播放控制、站点规则、诊断日志与脱敏导出）
 ├── popup.js                   # 原生 DOM 挂载、选项卡切换、规则持久化（0 innerHTML CSP 合规）
@@ -61,9 +61,11 @@
 │   └── content.js             # 主控制器、SPA 路由增强 (pushState/popstate/hashchange) 与控制台 API
 ├── test/
 │   ├── fake-dom.js            # 测试用轻量 DOM 桩（支持 open/closed Shadow DOM、组合选择器与伪类）
-│   ├── run-tests.js           # 内容脚本回归测试套件（117 项）
-│   ├── popup-tests.js         # 弹窗面板交互与 CSP 安全测试（50 项）
-│   └── v12-features-tests.js  # v1.2 特性与同章节多任务点全量测试套件（150 项）
+│   ├── run-tests.js           # 内容脚本行为测试（122 项）
+│   ├── popup-tests.js         # 弹窗面板交互与 CSP 安全测试（53 项）
+│   ├── v12-features-tests.js  # v1.2 特性与同章节多任务点测试（150 项）
+│   ├── regression-autoplay-tests.js # 连续播放核心链路回归测试（55 项）
+│   └── e2e-browser-test.js    # Headless Chromium 三层 iframe 端到端测试
 ├── .github/workflows/test.yml # GitHub Actions 持续集成自动化工作流
 ├── package.json               # 自动化测试脚本与项目描述
 └── README.md
@@ -86,7 +88,8 @@ __AUTO_NEXT__.scan()           // 手动扫描播放器（包含 Shadow DOM）
 __AUTO_NEXT__.setRate(1.75)    // 手动将播放器设为指定速率 (0.1~16x)
 __AUTO_NEXT__.events()         // 读取内存循环事件日志 (最近 50 条)
 __AUTO_NEXT__.candidates()     // 查看前 10 个前进控件候选及评分
-__AUTO_NEXT__.clickNext()      // 手动执行一次前进查找与点击
+__AUTO_NEXT__.clickNext()      // 调试用：直接执行一次前进查找与点击
+__AUTO_NEXT__.manualNavigateNext() // 手动导航并确认页面确实发生切换
 __AUTO_NEXT__.trySkip()        // 手动检查是否需要跳过无视频页面
 ```
 
@@ -95,13 +98,15 @@ __AUTO_NEXT__.trySkip()        // 手动检查是否需要跳过无视频页面
 项目附带完整的 Node.js 测试套件，无需启动真实浏览器即可全真模拟 DOM 运行环境：
 
 ```bash
-# 执行全部 317 项测试
+# 执行全部 380 项 Node 回归断言
 npm test
 
 # 分别执行各子套件
-npm run test:content  # 117 项 content script 行为测试
-npm run test:popup    # 50 项 popup 面板与 CSP 测试
+npm run test:content  # 122 项 content script 行为测试
+npm run test:popup    # 53 项 popup 面板与 CSP 测试
 npm run test:v12      # 150 项 v1.2.x 进阶特性与多任务点加固断言
+npm run test:regression # 55 项连续播放核心链路回归断言
+npm run test:e2e      # 真实 Chromium 三层 iframe 端到端验证
 ```
 
 ## 权限说明
@@ -115,6 +120,12 @@ npm run test:v12      # 150 项 v1.2.x 进阶特性与多任务点加固断言
 扩展不上传任何页面数据，亦不主动发起外部网络请求（免申请 `webNavigation` 等敏感权限，各 frame 探测通过 `scripting.allFrames` 原生支持）。
 
 ## 更新日志
+
+### v1.2.4 (2026-09-22)
+- **结尾防抢跑**：watchdog 只在距离真实结尾不超过 0.25 秒时兜底判定完成；若平台在倒数几秒暂停，会先补播最后几秒，不再提前跳节。
+- **未完成任务点弹窗恢复**：识别“当前章节还有任务点未完成”提示后自动点击“去学习”，并撤销本轮错误导航锁，绝不点击弹窗里的“下一节”。
+- **连续播放状态锁修复**：SPA URL 轮询仅触发恢复扫描，不再把已开始播放的新视频重新加锁，修复播放不定数量视频后停在末尾的问题。
+- **手动下一节防卡死**：改为先扫描全部 frame、只在最佳 frame 点击一次，并为脚本调用增加 4 秒超时；页面端同步确认导航是否真正生效。
 
 ### v1.2.3 (2026-09-21)
 - **核心连播链路回归排查与修复（视频 A 播完 → 自动进入视频 B → 视频 B 自动起播）**：
