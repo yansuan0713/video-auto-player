@@ -133,13 +133,14 @@ function createTestServer() {
 
 function findBrowserExecutable() {
   const candidates = [
+    process.env.CHROME_PATH,
     'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
     'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
     'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
     'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe'
   ];
   for (const p of candidates) {
-    if (fs.existsSync(p)) return p;
+    if (p && fs.existsSync(p)) return p;
   }
   throw new Error('未找到可用 Chromium 浏览器 (Edge / Chrome)');
 }
@@ -172,6 +173,7 @@ async function runE2E() {
     // 1. 等待插件初始化并通过 popup 存储开启自动连播
     await new Promise((r) => setTimeout(r, 1000));
     const swTarget = browser.targets().find((t) => t.url().includes('background.js'));
+    if (!swTarget) throw new Error('测试扩展的 service worker 未加载，无法验证连播');
     if (swTarget) {
       const extId = swTarget.url().split('/')[2];
       const popup = await browser.newPage();
@@ -179,6 +181,7 @@ async function runE2E() {
       await popup.evaluate(async () => {
         await chrome.storage.local.set({
           autoNext: true,
+          autoSkipNonVideo: true,
           autoRate: true,
           autoRate2x: true,
           playbackRate: 2.0

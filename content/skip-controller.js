@@ -71,20 +71,18 @@
     timers.clear();
   }
 
-  /** 本页面是否已经有可播放的视频 */
   /**
-   * 本页面是否**确定**没有视频。
+   * 本页面是否可能承载视频。
    *
    * 这里必须非常保守：新页面刚加载时 video.duration 是 NaN、
    * 平台换源时会短暂把 duration 清掉，这些时刻都不能判定成"没有视频"，
    * 否则会误判并对正在播放的页面点"下一节"，表现为"视频播几秒就被打断"。
    *
-   * 只要有任何一个 <video> 存在，就一律当作"有视频"，交给连播逻辑处理。
+   * 播放器常在子 iframe 内，顶层页面只看自己的 <video> 会误判为非视频页。
+   * 跨域 iframe 无法安全检查其内部，因此有嵌入 frame 时也交给连播逻辑处理。
    */
   function hasPlayableVideo() {
-    // 只要页面上存在 <video> 元素，就一律当作"有视频"：
-    // 哪怕 duration 还是 NaN、哪怕正在缓冲，也绝不跳过。
-    return document.querySelectorAll('video').length > 0;
+    return document.querySelectorAll('video, iframe, frame').length > 0;
   }
 
   /**

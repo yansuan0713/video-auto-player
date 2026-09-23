@@ -157,6 +157,32 @@ test('自动连播提示实际调用 UI，而不是初始化时捕获的空实�
   await runTimers(b.timers, { clock: b.clock });
   assert.ok(b.page.documentElement.querySelector('#__auto_next_toast__'));
 });
+
+test('视频位于 iframe 时自动跳过不能把顶层误判为非视频页', async () => {
+  const parentPage = buildLessonPage({ withNav: true });
+  parentPage.video.remove();
+  parentPage.body.append(new FakeElement('iframe', { attrs: { src: 'https://example.com/player' } }));
+  const childPage = buildLessonPage({ withNav: false });
+  const parentLog = [];
+  const childLog = [];
+  const parent = createSandbox({ page: parentPage, storage: { autoNext: true, autoSkipNonVideo: true }, logSink: parentLog });
+  const child = createSandbox({ page: childPage, storage: { autoNext: true, autoSkipNonVideo: true }, isTop: false, logSink: childLog });
+  child.frameWindow.parent = parent.frameWindow;
+  child.frameWindow.top = parent.frameWindow;
+  parent.frameWindow.frames.push(child.frameWindow);
+  parent.frameWindow.postMessage = data => parent.frameWindow.dispatchEvent(Object.assign(new FakeEvent('message'), { data }));
+  child.frameWindow.postMessage = data => child.frameWindow.dispatchEvent(Object.assign(new FakeEvent('message'), { data }));
+  loadExtension(parent.sandbox);
+  loadExtension(child.sandbox);
+  await tick();
+  await runTimers(parent.timers, { clock: parent.clock, maxRounds: 3 });
+  assert.equal(parentPage.state.clicked.length, 0);
+  childPage.video.watch(30);
+  childPage.video.finish();
+  await runTimers(child.timers, { clock: child.clock, maxRounds: 10 });
+  await runTimers(parent.timers, { clock: parent.clock, maxRounds: 10 });
+  assert.deepEqual(parentPage.state.clicked, ['next'], JSON.stringify({parentLog,childLog}));
+});
 (async () => {
   let failures = 0;
   for (const { name, fn } of tests) {
