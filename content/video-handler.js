@@ -99,6 +99,7 @@
         triggered: false,
         /** 判断 src 是否变化过，SPA 换集时同一个 <video> 会换源 */
         sourceKey: '',
+        firstObservedAt: Date.now(),
         /** 自动播放尝试次数（允许重试，但有上限） */
         autoPlayAttempts: 0,
         /** 最近一次自动播放后累计推进量；稳定播放后重置尝试额度 */
@@ -422,6 +423,7 @@
     resetCycle({ keepSource: false });
     if (rec) {
       rec.sourceKey = key;
+      rec.firstObservedAt = Date.now();
       rec.autoPlayAttempts = 0; // 换源后重新允许自动播放
       rec.progressSinceAutoPlay = 0;
       rec.resumeScheduled = false;
@@ -805,7 +807,7 @@
         cycle.awaitingConfirmation = false;
         cycle.navigated = true;
         cycle.navigatedSource = snapshot.videoSource;
-        messenger.reportNavigated();
+        messenger.reportNavigated(undefined, snapshot.timestamp);
         messenger.setBadge('→', '#16a34a');
         if (AutoNext.toast) AutoNext.toast.show('已跳转下一节', 'success');
         if (AutoNext.addEvent) AutoNext.addEvent('NAVIGATED', { button: btnText, reason: confirmed });
@@ -917,6 +919,19 @@
     }
     AutoNext.debug(`本轮跳转流程结束，等待下一节播放器加载 (${reason})`);
     scheduleNavigationRecovery(reason);
+  }
+
+  // A delayed confirmation belongs to the old player, not a frame created by that click.
+  function afterRemoteNavigation(navigationStartedAt, reason = '收到远程跳转广播') {
+    const rec = state.active && recordOf(state.active, { create: false });
+    if (Number.isFinite(navigationStartedAt) && navigationStartedAt > 0
+      && navigationStartedAt <= Date.now() && rec && rec.firstObservedAt >= navigationStartedAt
+      && !rec.triggered && !state.active.ended) {
+      resetCycle({ keepSource: false });
+      scheduleNavigationRecovery(reason);
+      return;
+    }
+    afterNavigation(reason);
   }
 
   /**
@@ -1206,6 +1221,7 @@
     notifyManualNavigation,
     recoverFromIncompleteTaskPrompt,
     afterNavigation,
+    afterRemoteNavigation,
     afterRouteChange,
     startNavigationConfirmation,
     captureNavigationSnapshot,

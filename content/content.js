@@ -190,10 +190,10 @@
   }
 
   /** 确认已经跳转，停止本 frame 的重复动作并进入统一收尾与播放恢复 */
-  function onRemoteNavigated() {
+  function onRemoteNavigated(data = {}) {
     if (!started || pageSuspended) return;
     if (videoHandler && typeof videoHandler.afterNavigation === 'function') {
-      videoHandler.afterNavigation('收到远程跳转广播');
+      videoHandler.afterRemoteNavigation(data.navigationStartedAt, '收到远程跳转广播');
     } else {
       videoHandler.resetCycle();
     }

@@ -246,6 +246,15 @@ test('视频位于 iframe 时自动跳过不能把顶层误判为非视频页', 
   await runTimers(parent.timers, { clock: parent.clock, maxRounds: 10 });
   assert.deepEqual(parentPage.state.clicked, ['next'], JSON.stringify({parentLog,childLog}));
 });
+test('迟到的远程确认不能锁住点击后创建的新播放器，旧播放器仍保持去重锁', async () => {
+  const b = await setup();
+  b.api.videoHandler.afterRemoteNavigation(b.clock.Date.now() - 1);
+  assert.equal(b.api.videoHandler.stats().cycle.navigated, false);
+  b.clock.advance(100);
+  b.api.videoHandler.afterRemoteNavigation(b.clock.Date.now());
+  assert.equal(b.api.videoHandler.stats().cycle.navigated, true);
+});
+
 (async () => {
   let failures = 0;
   for (const { name, fn } of tests) {

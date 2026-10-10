@@ -65,10 +65,10 @@
   }
 
   /** 带来源标记地发消息 */
-  function send(target, type, id) {
+  function send(target, type, id, navigationStartedAt) {
     if (!target || typeof target.postMessage !== 'function') return false;
     try {
-      target.postMessage({ source: SOURCE, type, id: id || nextId() }, '*');
+      target.postMessage({ source: SOURCE, type, id: id || nextId(), navigationStartedAt }, '*');
       return true;
     } catch (err) {
       stats.errors += 1;
@@ -110,18 +110,18 @@
     stats,
 
     /** 广播给所有子 frame */
-    broadcast(type, id) {
+    broadcast(type, id, navigationStartedAt) {
       let delivered = 0;
       for (const frame of childFrames()) {
-        if (send(frame, type, id)) delivered += 1;
+        if (send(frame, type, id, navigationStartedAt)) delivered += 1;
       }
       return delivered;
     },
 
     /** 通知父级 frame */
-    notifyParent(type, id) {
+    notifyParent(type, id, navigationStartedAt) {
       if (messenger.isTop) return 0;
-      return send(window.parent, type, id) ? 1 : 0;
+      return send(window.parent, type, id, navigationStartedAt) ? 1 : 0;
     },
 
     /**
@@ -148,12 +148,12 @@
     },
 
     /** 广播“已经跳转了”，让其他 frame 停下来 */
-    reportNavigated(id) {
+    reportNavigated(id, navigationStartedAt = Date.now()) {
       lastNavigationAt = Date.now();
       const own = id || nextId();
       markSeen(own);
-      messenger.broadcast(TYPES.NAVIGATED, own);
-      messenger.notifyParent(TYPES.NAVIGATED, own);
+      messenger.broadcast(TYPES.NAVIGATED, own, navigationStartedAt);
+      messenger.notifyParent(TYPES.NAVIGATED, own, navigationStartedAt);
     },
 
     /**
@@ -198,9 +198,9 @@
             break;
           case TYPES.NAVIGATED:
             lastNavigationAt = Date.now();
-            if (handlers.onNavigated) handlers.onNavigated();
-            messenger.broadcast(TYPES.NAVIGATED, data.id);
-            if (!messenger.isTop) messenger.notifyParent(TYPES.NAVIGATED, data.id);
+            if (handlers.onNavigated) handlers.onNavigated(data);
+            messenger.broadcast(TYPES.NAVIGATED, data.id, data.navigationStartedAt);
+            if (!messenger.isTop) messenger.notifyParent(TYPES.NAVIGATED, data.id, data.navigationStartedAt);
             break;
           default:
             break;

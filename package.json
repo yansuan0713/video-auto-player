@@ -12,7 +12,11 @@
     "test:version": "node test/version-consistency-tests.js",
     "test:lifecycle": "node test/lifecycle-tests.js",
     "test:browser-lifecycle": "node test/lifecycle-browser-test.js",
-    "test:browser-startup": "node test/startup-browser-test.js"
+    "test:browser-startup": "node test/startup-browser-test.js",
+    "test:browser": "playwright test",
+    "test:real": "node test/test-real.js",
+    "test:login": "node test/real-course.js --login",
+    "test:setup": "playwright install chromium"
   },
   "keywords": [
     "chrome-extension",
@@ -22,6 +26,7 @@
   ],
   "license": "MIT",
   "devDependencies": {
+    "@playwright/test": "^1.64.0",
     "puppeteer-core": "^25.11.0"
   }
 }
