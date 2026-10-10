@@ -14,6 +14,21 @@
 (function () {
   'use strict';
 
+  if (window.__AUTO_NEXT_BOOT__) return;
+  const boot = window.__AUTO_NEXT_BOOT__ = {
+    status: 'loading', missingModules: [], errors: []
+  };
+  let extensionScriptPrefix = '';
+  try { extensionScriptPrefix = chrome.runtime.getURL('content/'); } catch (_) {}
+  window.addEventListener('error', (event) => {
+    // Page errors are unrelated to the isolated extension startup.
+    if (!extensionScriptPrefix || !event.filename || !event.filename.startsWith(extensionScriptPrefix)) return;
+    const startup = boot.status === 'loading' || boot.status === 'initializing';
+    if (startup) boot.status = 'initialization_failed';
+    boot.errors.push({ file: event.filename.split('/').pop(), line: event.lineno, phase: startup ? 'startup' : 'runtime' });
+    boot.errors = boot.errors.slice(-5);
+  });
+
   const PREFIX = '[AutoNext]';
 
   const state = {

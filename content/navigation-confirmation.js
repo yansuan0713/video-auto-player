@@ -4,6 +4,8 @@
  */
 (function () {
   'use strict';
+  // Declarative injection and popup recovery may reach the same document.
+  if (window.AutoNext && window.AutoNext.createNavigationConfirmation) return;
   /**
    * @param {{capture: function(): object, check: function(object): (string|false),
    *   click: function(Element): void}} dependencies

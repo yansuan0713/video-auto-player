@@ -20,7 +20,7 @@ const POPUP_JS = path.resolve(__dirname, '../popup.js');
 const POPUP_HTML = path.resolve(__dirname, '../popup.html');
 
 /** popup.js 里用 getElementById 取的那些元素 */
-const ELEMENT_IDS = ['autoNext', 'autoRate2x', 'autoSkipNonVideo', 'verbose', 'state', 'dot', 'printStats', 'clickNext', 'diag'];
+const ELEMENT_IDS = ['autoNext', 'autoRate2x', 'autoSkipNonVideo', 'verbose', 'state', 'dot', 'printStats', 'clickNext', 'diag', 'copyTextBtn', 'exportJsonBtn'];
 
 function createPopupSandbox({ tabUrl = 'https://mooc1.chaoxing.com/mycourse/studentstudy', frames = null, failScripting = null } = {}) {
   const root = new FakeElement('body');
@@ -60,10 +60,10 @@ function createPopupSandbox({ tabUrl = 'https://mooc1.chaoxing.com/mycourse/stud
     const frameIds = Array.isArray(target.frameIds)
       ? availableFrameIds.filter((frameId) => target.frameIds.includes(frameId))
       : (target.allFrames ? availableFrameIds : [0]);
-    return frameIds.map((frameId) => ({
+    return Promise.all(frameIds.map(async (frameId) => ({
       frameId,
-      result: vm.runInContext(`(${func.toString()})()`, context, { filename: `injected-frame-${frameId}` })
-    }));
+      result: await vm.runInContext(`(${func.toString()})()`, context, { filename: `injected-frame-${frameId}` })
+    })));
   };
 
   // popup 自身是顶层文档：window.top === window。
@@ -80,6 +80,8 @@ function createPopupSandbox({ tabUrl = 'https://mooc1.chaoxing.com/mycourse/stud
     window: win,
     setTimeout,
     clearTimeout,
+    navigator: { clipboard: { writeText: async text => { sandbox.copied = text; } } },
+    alert: () => {},
     chrome: {
       storage: {
         local: {
@@ -151,7 +153,7 @@ function installAutoNextStub(sandbox, { foundScore = 0, foundText = '', candidat
     videoHandler: { diagnostics: () => diag },
     candidates: () => candidates,
     clickNext: () => { calls.clickNext += 1; return button; },
-    manualNavigateNext: () => { calls.clickNext += 1; return button; }
+    manualNavigateNext: () => { calls.clickNext += 1; return { status: 'confirmed', clicked: true, reason: 'active-catalog-node-changed' }; }
   };
   sandbox.window.__AUTO_NEXT__.buttonFinder = {
     findNextButton: () => { calls.findNextButton += 1; return button; }
@@ -221,7 +223,7 @@ async function testDiagNoCandidate() {
   const text = diagText(byId);
   check('面板不再是隐藏状态', byId.get('diag').hidden === false);
   check('列出了播放器信息', text.includes('21:05') && text.includes('2x'), text.slice(0, 260));
-  check('给出“有播放器但没有按钮”的结论', text.includes('有播放器但所有 frame 都没有'), text.slice(0, 300));
+  check('给出“已启动但没有候选”的结论', text.includes('已启动的 frame 中未找到'), text.slice(0, 300));
   check('提示把候选按钮内容发出来', text.includes('发我'), text.slice(-220));
   check('显示了 frame 编号', text.includes('frame 3'), text.slice(0, 220));
 }
@@ -311,7 +313,7 @@ async function testManualClickNext() {
     const calls = installAutoNextStub(sandbox, { foundScore: 188, foundText: '下一节' });
 
     // 注入函数真的跑一遍
-    const injected = vm.runInContext('(' + vm.runInContext('probeClickNext.toString()', context) + ')()', context);
+    const injected = await vm.runInContext('(' + vm.runInContext('probeClickNext.toString()', context) + ')()', context);
     check('调用了 buttonFinder.findNextButton', calls.findNextButton >= 1, String(calls.findNextButton));
     check('调用了 clickNext 真正点击', calls.clickNext >= 1, String(calls.clickNext));
     check('注入函数报告 clicked=true', injected.clicked === true, JSON.stringify(injected));
@@ -320,7 +322,7 @@ async function testManualClickNext() {
     vm.runInContext('renderClickResult(' + JSON.stringify([{ frameId: 0, result: injected }]) + ')', context);
     const text = diagText(byId);
     check('面板报告已点击并带分数', text.includes('已点击') && text.includes('188'), text.slice(0, 260));
-    check('面板解释“查找正常，问题在结束判定”', text.includes('结束判定'), text.slice(0, 400));
+    check('面板只报告观察到的页面变化', text.includes('已确认页面变化') && !text.includes('结束判定'), text.slice(0, 400));
   }
 
   // 6.2 找不到按钮
@@ -333,7 +335,7 @@ async function testManualClickNext() {
     const text = diagText(byId);
     check('没找到时不调用 clickNext', calls.clickNext === 0, String(calls.clickNext));
     check('面板报告找不到按钮', text.includes('所有 frame 都没有找到可点击'), text.slice(0, 300));
-    check('面板指出这就是失效原因', text.includes('自动跳转失效的原因'), text.slice(0, 400));
+    check('面板不武断认定失效原因', text.includes('尚不能确定自动跳转失效的原因'), text.slice(0, 400));
   }
 
   // 6.3 content script 没注入
@@ -506,6 +508,49 @@ function testNoInnerHtml() {
   check('popup.html 含诊断面板容器', html.includes('id="diag"'));
 }
 
+async function testStartupAndFreshExport() {
+  console.log('\n[10] 启动状态、实时复制与手动结果');
+  {
+    const { sandbox, context, byId } = createPopupSandbox();
+    sandbox.window.AutoNext = { settings: {} };
+    sandbox.window.__AUTO_NEXT_BOOT__ = { status: 'initialization_failed', missingModules: ['videoHandler'], errors: [{ file: 'video-handler.js', line: 16 }] };
+    runPopup(sandbox);
+    const result = vm.runInContext('probeFrame()', context);
+    check('部分模块存在表示已注入而非未注入', result.injected && result.startupStatus === 'initialization_failed');
+    await vm.runInContext('runDetection()', context);
+    check('初始化失败报告缺少模块和启动错误', diagText(byId).includes('缺少模块') && diagText(byId).includes('video-handler.js'));
+    check('初始化失败不武断建议添加选择器', !diagText(byId).includes('需要补充选择器'));
+  }
+  {
+    const { sandbox, context } = createPopupSandbox();
+    runPopup(sandbox);
+    installAutoNextStub(sandbox);
+    const copy = vm.runInContext('ui.copyTextBtn', context);
+    const json = vm.runInContext('ui.exportJsonBtn', context);
+    copy.dispatchEvent({ type: 'click' });
+    for (let i = 0; i < 8; i++) await tick();
+    check('首次文本复制无需预先检测便包含当前 frame', sandbox.copied && sandbox.copied.includes('Frame 数量: 1'));
+    json.dispatchEvent({ type: 'click' });
+    for (let i = 0; i < 8; i++) await tick();
+    check('JSON 导出重新检测并包含当前 frame', JSON.parse(sandbox.copied).frames.length === 1);
+    const old = sandbox.copied;
+    sandbox.chrome.scripting.executeScript = async () => { throw new Error('test denial'); };
+    copy.dispatchEvent({ type: 'click' });
+    for (let i = 0; i < 8; i++) await tick();
+    check('检测失败不复制旧缓存', sandbox.copied === old && vm.runInContext('lastDiagResults.length', context) === 0);
+  }
+  for (const status of ['unconfirmed', 'busy']) {
+    const { sandbox, context, byId } = createPopupSandbox();
+    runPopup(sandbox);
+    installAutoNextStub(sandbox, { foundScore: 188, foundText: '下一节' });
+    sandbox.window.__AUTO_NEXT__.manualNavigateNext = () => ({ status, clicked: status === 'unconfirmed' });
+    const result = await vm.runInContext('probeClickNext()', context);
+    vm.runInContext('renderClickResult(' + JSON.stringify([{frameId:0,result}]) + ')', context);
+    check(`${status} 不报告导航成功`, !diagText(byId).includes('已确认页面变化'));
+    check(`${status} 给出明确反馈`, diagText(byId).includes(status === 'busy' ? '本次没有再次点击' : '跳转结果未确认'));
+  }
+}
+
 // 被 require 时只导出工具，方便单独调试；直接 node 运行时才执行测试
 module.exports = { createPopupSandbox, runPopup, installAutoNextStub };
 
@@ -523,6 +568,7 @@ module.exports = { createPopupSandbox, runPopup, installAutoNextStub };
   await testManualClickNext();
   await testTimelineDiagnostics();
   await testStaleCodeDetection();
+  await testStartupAndFreshExport();
   testNoInnerHtml();
 
   const failed = results.filter((r) => !r.ok);

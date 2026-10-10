@@ -182,3 +182,5 @@ npm run test:browser-lifecycle # 真实 DOM、原生媒体重播、用户全屏�
 
 本项目采用 MIT 许可证。提交 Issue 或 Pull Request 时，请提供复现步骤与已脱敏的诊断面板导出信息，严禁附带未经脱敏的个人凭证或敏感数据。
 
+
+自动化浏览器测试与首次课程登录见 [测试说明](docs/automated-browser-tests.md)，日常命令为 `npm run test:real`。

@@ -14,7 +14,18 @@
   'use strict';
 
   const AutoNext = window.AutoNext;
-  if (!AutoNext || !AutoNext.videoHandler) return;
+  const boot = window.__AUTO_NEXT_BOOT__ || (window.__AUTO_NEXT_BOOT__ = { errors: [] });
+  if (boot.controllerStarted) return;
+  boot.missingModules = ['settings', 'dom', 'toast', 'buttonFinder', 'messenger',
+    'createPlaybackController', 'createNavigationConfirmation', 'videoHandler']
+    .filter(name => !AutoNext || !AutoNext[name]);
+  if (boot.missingModules.length) {
+    boot.status = 'initialization_failed';
+    return;
+  }
+  boot.controllerStarted = true;
+  boot.status = 'initializing';
+  try {
 
   const { dom, messenger, toast } = AutoNext;
   const videoHandler = AutoNext.videoHandler;
@@ -179,10 +190,10 @@
   }
 
   /** 确认已经跳转，停止本 frame 的重复动作并进入统一收尾与播放恢复 */
-  function onRemoteNavigated() {
+  function onRemoteNavigated(data = {}) {
     if (!started || pageSuspended) return;
     if (videoHandler && typeof videoHandler.afterNavigation === 'function') {
-      videoHandler.afterNavigation('收到远程跳转广播');
+      videoHandler.afterRemoteNavigation(data.navigationStartedAt, '收到远程跳转广播');
     } else {
       videoHandler.resetCycle();
     }
@@ -512,9 +523,14 @@
     /** popup 手动跳转也走生效确认，避免非视频页点击后留下错误导航状态。 */
     manualNavigateNext(sel) {
       const found = AutoNext.buttonFinder.findNextButton(40, sel);
-      if (!found) return null;
-      videoHandler.startNavigationConfirmation(found.el, 'popup手动跳转');
-      return found;
+      if (!found) return Promise.resolve({ status: 'not_found', clicked: false });
+      return new Promise(resolve => {
+        const accepted = videoHandler.startNavigationConfirmation(found.el, 'popup手动跳转', {
+          onConfirm: reason => resolve({ status: 'confirmed', clicked: true, reason }),
+          onTimeout: () => resolve({ status: 'unconfirmed', clicked: true })
+        });
+        if (!accepted) resolve({ status: 'busy', clicked: false });
+      });
     },
     events: () => (AutoNext.getEvents ? AutoNext.getEvents() : []),
     /** 手动触发一次“跳过当前非视频页面”的判断（用于临时验证） */
@@ -539,6 +555,17 @@
     }
   };
 
-  init().catch((err) => AutoNext.error('初始化失败：', err));
+  boot.ready = init().then(() => {
+    if (!boot.errors.length) boot.status = 'ready';
+  }).catch((err) => {
+    boot.status = 'initialization_failed';
+    boot.errors.push({ file: 'content.js', phase: 'init' });
+    AutoNext.error('初始化失败：', err);
+  });
+  } catch (err) {
+    boot.status = 'initialization_failed';
+    boot.errors.push({ file: 'content.js', phase: 'controller' });
+    AutoNext.error('控制器启动失败：', err);
+  }
 
 })();
