@@ -1,5 +1,8 @@
 'use strict';
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
 const { createSandbox, loadExtension, runTimers, buildLessonPage } = require('./run-tests');
 const { FakeEvent, FakeElement } = require('./fake-dom');
 const tick = () => new Promise((resolve) => setImmediate(resolve));
@@ -14,6 +17,66 @@ async function setup(storage = {}) {
   return { ...box, page, api };
 }
 function pending(box) { return box.timers.filter(t => !t.cancelled && !t.done); }
+
+test('并发补注入不重复初始化模块、监听或定时器', async () => {
+  const b = await setup();
+  const controller = b.sandbox.window.__AUTO_NEXT__;
+  const player = b.api.videoHandler;
+  const timers = b.intervals.length;
+  const listeners = b.storageListeners.length;
+  loadExtension(b.sandbox);
+  loadExtension(b.sandbox);
+  await tick();
+  assert.equal(b.sandbox.window.__AUTO_NEXT__, controller);
+  assert.equal(b.api.videoHandler, player);
+  assert.equal(b.intervals.length, timers);
+  assert.equal(b.storageListeners.length, listeners);
+  assert.equal((b.page.video.listeners.get('ended') || []).length, 1);
+});
+
+test('缺少播放控制模块时启动失败可诊断，不冒充未注入', async () => {
+  const b = createSandbox({ page: buildLessonPage({ withNav: true }) });
+  const context = vm.createContext(b.sandbox);
+  const files = require('../manifest.json').content_scripts[0].js;
+  const errors = [];
+  for (const file of files) {
+    if (file === 'content/playback-controller.js') continue;
+    try { vm.runInContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), context); }
+    catch (err) { errors.push(err); }
+  }
+  assert.equal(errors.length, 1);
+  assert.equal(b.sandbox.window.__AUTO_NEXT_BOOT__.status, 'initialization_failed');
+  assert.ok(b.sandbox.window.__AUTO_NEXT_BOOT__.missingModules.includes('videoHandler'));
+  assert.ok(b.sandbox.window.__AUTO_NEXT_BOOT__.missingModules.includes('createPlaybackController'));
+  assert.equal(b.sandbox.window.__AUTO_NEXT__, undefined);
+});
+
+test('异步设置加载失败时公开 API 不表示初始化成功', async () => {
+  const b = createSandbox({ page: buildLessonPage({ withNav: true }) });
+  const context = vm.createContext(b.sandbox);
+  for (const file of require('../manifest.json').content_scripts[0].js) {
+    if (file === 'content/content.js') b.sandbox.window.AutoNext.settings.load = () => Promise.reject(new Error('test storage failure'));
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), context);
+  }
+  assert.equal(b.sandbox.window.__AUTO_NEXT_BOOT__.status, 'initializing');
+  await tick();
+  assert.ok(b.sandbox.window.__AUTO_NEXT__);
+  assert.equal(b.sandbox.window.__AUTO_NEXT_BOOT__.status, 'initialization_failed');
+  assert.equal(b.sandbox.window.__AUTO_NEXT_BOOT__.errors[0].phase, 'init');
+});
+
+test('启动完成后的运行错误不会误标初始化失败或禁用手动 API', async () => {
+  const b = createSandbox({ page: buildLessonPage({ withNav: true }) });
+  b.sandbox.chrome.runtime.getURL = value => 'chrome-extension://test-extension/' + value;
+  const api = loadExtension(b.sandbox);
+  await tick();
+  const boot = b.sandbox.window.__AUTO_NEXT_BOOT__;
+  assert.equal(boot.status, 'ready');
+  b.frameWindow.dispatchEvent({ type: 'error', filename: 'chrome-extension://test-extension/content/video-handler.js', lineno: 99 });
+  assert.equal(boot.status, 'ready');
+  assert.equal(boot.errors[0].phase, 'runtime');
+  assert.equal(b.sandbox.window.__AUTO_NEXT__.videoHandler, api.videoHandler);
+});
 
 test('移除并重新插入同一播放器后重新绑定并能处理 pause', async () => {
   const b = await setup();

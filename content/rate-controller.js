@@ -9,6 +9,8 @@
  */
 (function () {
   'use strict';
+  // Declarative injection and popup recovery may reach the same document.
+  if (window.AutoNext && window.AutoNext.rateController) return;
 
   const AutoNext = window.AutoNext;
 

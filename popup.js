@@ -462,11 +462,22 @@ function probeFrame() {
   }));
 
   const api = window.__AUTO_NEXT__;
-  if (!api) {
+  const boot = window.__AUTO_NEXT_BOOT__;
+  const modules = window.AutoNext;
+  const injected = !!(api || boot || modules);
+  const startup = {
+    startupStatus: boot ? boot.status : (api ? 'ready' : (modules ? 'initialization_failed' : 'not_injected')),
+    missingModules: ['settings', 'dom', 'toast', 'buttonFinder', 'messenger',
+      'createPlaybackController', 'createNavigationConfirmation', 'videoHandler']
+      .filter(name => !modules || !modules[name]),
+    startupErrors: boot ? (boot.errors || []) : []
+  };
+  if (!api || startup.startupStatus !== 'ready') {
     return {
       frame: window.top === window ? '顶层页面' : 'iframe',
       url: sanitizeUrl(location.href),
-      injected: false,
+      injected,
+      ...startup,
       videos
     };
   }
@@ -488,6 +499,7 @@ function probeFrame() {
     frame: window.top === window ? '顶层页面' : 'iframe',
     url: sanitizeUrl(location.href),
     injected: true,
+    ...startup,
     scriptVersion: api.version || '0.0.0-旧版',
     autoNext: api.settings ? api.settings.enabled === true : false,
     autoRate2x: api.settings ? (api.settings.autoRate === true || api.settings.autoRate2x === true) : false,
@@ -598,6 +610,13 @@ function buildVerdicts(result) {
     out.push([false, '这个 frame 里没有注入 content script']);
     return out;
   }
+  if (result.startupStatus && result.startupStatus !== 'ready') {
+    out.push([false, `content script 已注入，模块初始化${result.startupStatus === 'initialization_failed' ? '失败' : '尚未完成'}`]);
+    if (result.missingModules && result.missingModules.length) out.push([false, `缺少模块：${result.missingModules.join(', ')}`]);
+    if (result.startupErrors && result.startupErrors.length) out.push([false, `启动错误：${JSON.stringify(result.startupErrors)}`]);
+    out.push([false, '重新加载扩展并刷新课程页；此状态不能判断是否缺少选择器']);
+    return out;
+  }
   if (result.autoNext !== true) {
     out.push([false, '「自动进入下一节」在这个 frame 里是关闭的 → 打开开关后刷新页面']);
   } else {
@@ -624,7 +643,7 @@ function buildVerdicts(result) {
 
   const cands = result.candidates || [];
   if (cands.length === 0) {
-    out.push([false, '没找到任何“下一节”候选按钮 → 这是不跳转的原因，需要把该页面的按钮选择器加进 button-finder.js']);
+    out.push([false, '这个 frame 没有“下一节”候选；按钮可能在其他 frame，不能单独判断原因']);
   } else {
     const top = cands[0];
     const ok = top.score >= 40;
@@ -682,7 +701,7 @@ function renderDiag(results, tabUrl, popupVersion) {
   if (skipTotal) kv(head, '已跳过非视频页', `${skipTotal} 个`);
 
   // 版本一致性检查
-  const injected = results.filter((r) => r.result && r.result.injected);
+  const injected = results.filter((r) => r.result && r.result.injected && (!r.result.startupStatus || r.result.startupStatus === 'ready'));
   const stale = injected.filter((r) => r.result.scriptVersion !== popupVersion);
   if (injected.length && stale.length) {
     const shown = stale.slice(0, 3).map((r) => `frame ${r.frameId}=${r.result.scriptVersion}`).join('、');
@@ -692,8 +711,11 @@ function renderDiag(results, tabUrl, popupVersion) {
     verdict(head, true, `页面内代码已是最新（v${popupVersion}）`);
   }
 
-  if (withVideo.length && !withCandidates.length) {
-    verdict(head, false, '有播放器但所有 frame 都没有“下一节”按钮 → 这就是不跳转的原因');
+  const startupIncomplete = results.some(r => !r.result || !r.result.injected || (r.result.startupStatus && r.result.startupStatus !== 'ready'));
+  if (startupIncomplete) {
+    verdict(head, false, '部分 frame 未完成启动；先检查下方启动状态，当前不能断定缺少选择器');
+  } else if (withVideo.length && !withCandidates.length) {
+    verdict(head, false, '已启动的 frame 中未找到“下一节”候选，需要检查页面控件');
   } else if (withVideo.length && withCandidates.length) {
     const hasVideo = withVideo.some((r) => r.result.autoNext === true);
     verdict(head, hasVideo, hasVideo
@@ -713,6 +735,9 @@ function renderDiag(results, tabUrl, popupVersion) {
     }
 
     kv(sec, '地址', sanitizeUrl(result.url));
+    kv(sec, '启动状态', result.startupStatus || (result.injected ? 'ready' : 'not_injected'));
+    if (result.recovered) verdict(sec, true, '已为当前文档补充注入 content script');
+    if (result.recoveryError) verdict(sec, false, result.recoveryError);
     if (result.injected) {
       kv(sec, '代码版本', result.scriptVersion || '旧版（无版本号）');
       kv(sec, '连播', result.autoNext ? '开' : '关');
@@ -820,10 +845,52 @@ function renderEventLog(results) {
 }
 
 // 诊断检测触发
-let detectionRunning = false;
-async function runDetection() {
-  if (detectionRunning) return;
-  detectionRunning = true;
+let detectionRunning = null;
+const framePreparations = new Map();
+function prepareFrames(tab) {
+  if (framePreparations.has(tab.id)) return framePreparations.get(tab.id);
+  const operation = (async () => {
+    const probe = () => withTimeout(chrome.scripting.executeScript({
+      target: { tabId: tab.id, allFrames: true }, world: 'ISOLATED', func: probeFrame
+    }), MANUAL_CLICK_TIMEOUT_MS, '诊断扫描超时，请刷新页面后重试');
+    const initial = await probe();
+    const recovered = new Set();
+    const failures = new Map();
+    const files = chrome.runtime.getManifest().content_scripts?.[0]?.js;
+    for (const row of initial) {
+      // Do not restart partially loaded modules or guess which document a frame now holds.
+      if (!row.result || row.result.startupStatus !== 'not_injected' || !row.documentId || !files) continue;
+      try {
+        const target = { tabId: tab.id, documentIds: [row.documentId] };
+        await withTimeout(chrome.scripting.executeScript({ target, world: 'ISOLATED', files }),
+          MANUAL_CLICK_TIMEOUT_MS, '补充注入超时');
+        recovered.add(row.documentId);
+      } catch (_) {
+        failures.set(row.documentId, '补充注入失败：该文档可能已离开或不允许注入，请刷新课程页');
+      }
+    }
+    // Wait for settings.load(), not merely for the public API to be assigned.
+    await withTimeout(chrome.scripting.executeScript({
+      target: { tabId: tab.id, allFrames: true }, world: 'ISOLATED',
+      func: async () => { const boot = window.__AUTO_NEXT_BOOT__; if (boot && boot.ready) await boot.ready; }
+    }), MANUAL_CLICK_TIMEOUT_MS, '模块初始化超时');
+    const results = await probe();
+    return results.sort((a, b) => a.frameId - b.frameId).map(({ frameId, documentId, result }) => ({
+      frameId, documentId, result: result ? {
+        ...result, recovered: recovered.has(documentId), recoveryError: failures.get(documentId) || ''
+      } : null
+    }));
+  })();
+  framePreparations.set(tab.id, operation);
+  operation.finally(() => framePreparations.delete(tab.id)).catch(() => {});
+  return operation;
+}
+function runDetection() {
+  if (detectionRunning) return detectionRunning;
+  detectionRunning = performDetection().finally(() => { detectionRunning = null; });
+  return detectionRunning;
+}
+async function performDetection() {
   if (ui.printStats) ui.printStats.classList.add('busy');
   const original = ui.printStats ? ui.printStats.textContent : '检测当前标签页';
   if (ui.printStats) ui.printStats.textContent = '检测中…';
@@ -833,17 +900,15 @@ async function runDetection() {
       MANUAL_CLICK_TIMEOUT_MS, '读取当前标签页超时');
     if (!tab || !tab.id) throw new Error('找不到当前标签页');
 
-    const target = { tabId: tab.id, allFrames: true };
-    const results = await withTimeout(chrome.scripting.executeScript({ target, func: probeFrame }),
-      MANUAL_CLICK_TIMEOUT_MS, '诊断扫描超时，请刷新页面后重试');
-    const rows = results
-      .slice()
-      .sort((a, b) => a.frameId - b.frameId)
-      .map(({ frameId, result }) => ({ frameId, result: result || null }));
+    const rows = await prepareFrames(tab);
+    currentTabFullUrl = tab.url || '';
+    try { currentTabHost = new URL(currentTabFullUrl).hostname; } catch (_) { currentTabHost = ''; }
 
     renderDiag(rows, tab.url, chrome.runtime.getManifest().version);
     if (ui.printStats) ui.printStats.textContent = '✓ 已检测';
+    return true;
   } catch (err) {
+    lastDiagResults = [];
     const message = err && err.message ? err.message : String(err);
     if (ui.diag) {
       ui.diag.hidden = false;
@@ -855,9 +920,9 @@ async function runDetection() {
       ui.diag.appendChild(sec);
     }
     if (ui.printStats) ui.printStats.textContent = '检测失败';
+    return false;
   } finally {
     setTimeout(() => {
-      detectionRunning = false;
       if (ui.printStats) {
         ui.printStats.textContent = original;
         ui.printStats.classList.remove('busy');
@@ -887,7 +952,11 @@ function withTimeout(promise, timeoutMs, message) {
 
 function probeNextCandidate() {
   const api = window.__AUTO_NEXT__;
-  if (!api) return { injected: false, frame: window.top === window ? '顶层页面' : 'iframe', url: location.href, candidates: [] };
+  const boot = window.__AUTO_NEXT_BOOT__;
+  if (!api || (boot && boot.status !== 'ready')) return {
+    injected: !!(api || boot || window.AutoNext), startupStatus: boot ? boot.status : (window.AutoNext ? 'initialization_failed' : 'not_injected'),
+    frame: window.top === window ? '顶层页面' : 'iframe', url: location.href, candidates: []
+  };
 
   const safeCandidates = () => {
     try {
@@ -921,8 +990,12 @@ function probeNextCandidate() {
   return result;
 }
 
-function probeClickNext() {
+async function probeClickNext() {
   const api = window.__AUTO_NEXT__;
+  const boot = window.__AUTO_NEXT_BOOT__;
+  if (boot && boot.status !== 'ready') return {
+    injected: true, startupStatus: boot.status, status: 'not_ready', clicked: false, candidates: []
+  };
   if (!api) return { injected: false, frame: window.top === window ? '顶层页面' : 'iframe', url: location.href, candidates: [] };
 
   let found = null;
@@ -948,11 +1021,14 @@ function probeClickNext() {
   if (!found) return result;
 
   if (typeof api.manualNavigateNext === 'function') {
-    api.manualNavigateNext();
+    const outcome = await api.manualNavigateNext();
+    result.status = outcome && outcome.status || 'unconfirmed';
+    result.clicked = outcome && typeof outcome.clicked === 'boolean' ? outcome.clicked : !!outcome;
+    result.reason = outcome && outcome.reason || '';
   } else {
-    api.clickNext();
+    result.clicked = !!api.clickNext();
+    result.status = result.clicked ? 'unconfirmed' : 'not_found';
   }
-  result.clicked = true;
   return result;
 }
 
@@ -963,13 +1039,19 @@ function renderClickResult(rows) {
   }
 
   const sec = section('手动点击“下一节”');
-  const hit = rows.find((r) => r.result && r.result.clicked);
-  if (hit) {
-    verdict(sec, true, `已点击「${hit.result.text}」（score=${hit.result.score}，${hit.result.frame}）`);
-    verdict(sec, true, '如果页面确实翻到了下一节，说明查找与点击都正常；自动流程没触发，问题就出在“视频结束判定”上');
+  const hit = rows.find((r) => r.result && r.result.status);
+  const unavailable = rows.some(r => r.result && (!r.result.injected || (r.result.startupStatus && r.result.startupStatus !== 'ready')));
+  if (hit && hit.result.status === 'confirmed') {
+    verdict(sec, true, `已点击「${hit.result.text}」（score=${hit.result.score}，${hit.result.frame}），已确认页面变化：${hit.result.reason}`);
+  } else if (hit && hit.result.status === 'busy') {
+    verdict(sec, false, '已有导航正在处理中，本次没有再次点击');
+  } else if (hit && hit.result.clicked) {
+    verdict(sec, false, `已点击「${hit.result.text}」，确认窗口内未观察到页面变化；跳转结果未确认`);
+  } else if (unavailable) {
+    verdict(sec, false, '部分 frame 没有完成 content script 启动；不能判断是否缺少选择器');
   } else {
     verdict(sec, false, '所有 frame 都没有找到可点击的“下一节”按钮');
-    verdict(sec, false, '→ 这就是自动跳转失效的原因：该页面的按钮不在候选列表里，需要补充选择器');
+    verdict(sec, false, '当前没有可用候选，需要检查页面控件；尚不能确定自动跳转失效的原因');
   }
   if (ui.diag) ui.diag.appendChild(sec);
   rows.forEach(({ frameId, result }) => {
@@ -980,6 +1062,8 @@ function renderClickResult(rows) {
     kv(box, '地址', sanitizeUrl(result.url));
     if (!result.injected) {
       box.appendChild(el('div', 'empty', '这个 frame 没有注入 content script'));
+    } else if (result.startupStatus && result.startupStatus !== 'ready') {
+      box.appendChild(el('div', 'empty', `content script 已注入，模块初始化失败或尚未完成（${result.startupStatus}）`));
     } else if (cands0.length === 0) {
       box.appendChild(el('div', 'empty', '没有任何候选按钮'));
     } else {
@@ -1007,19 +1091,20 @@ if (ui.clickNext) {
       const [tab] = await withTimeout(chrome.tabs.query({ active: true, currentWindow: true }),
         MANUAL_CLICK_TIMEOUT_MS, '读取当前标签页超时');
       if (!tab || !tab.id) throw new Error('找不到当前标签页');
+      await prepareFrames(tab);
 
       // 第一阶段只读扫描所有 frame，第二阶段只在最佳 frame 中执行一次点击。
       // 不能把点击函数 allFrames 注入，否则顶层和多个 iframe 会同时点“下一节”。
       const scanTarget = { tabId: tab.id, allFrames: true };
       const scanned = await withTimeout(
-        chrome.scripting.executeScript({ target: scanTarget, func: probeNextCandidate }),
+        chrome.scripting.executeScript({ target: scanTarget, world: 'ISOLATED', func: probeNextCandidate }),
         MANUAL_CLICK_TIMEOUT_MS,
         '扫描页面 frame 超时，请刷新课程页面后重试'
       );
       let rows = scanned
         .slice()
         .sort((a, b) => a.frameId - b.frameId)
-        .map(({ frameId, result }) => ({ frameId, result: result || null }));
+        .map(({ frameId, documentId, result }) => ({ frameId, documentId, result: result || null }));
 
       const chosen = rows
         .filter((row) => row.result && row.result.found)
@@ -1032,9 +1117,11 @@ if (ui.clickNext) {
         })[0];
 
       if (chosen) {
-        const clickTarget = { tabId: tab.id, frameIds: [chosen.frameId] };
+        const clickTarget = chosen.documentId
+          ? { tabId: tab.id, documentIds: [chosen.documentId] }
+          : { tabId: tab.id, frameIds: [chosen.frameId] };
         const clicked = await withTimeout(
-          chrome.scripting.executeScript({ target: clickTarget, func: probeClickNext }),
+          chrome.scripting.executeScript({ target: clickTarget, world: 'ISOLATED', func: probeClickNext }),
           MANUAL_CLICK_TIMEOUT_MS,
           '点击“下一节”超时；页面可能正在换页，请稍后重试'
         );
@@ -1045,17 +1132,19 @@ if (ui.clickNext) {
       }
 
       renderClickResult(rows);
-      ui.clickNext.textContent = '✓ 已执行';
+      const outcome = rows.find(r => r.result && r.result.status);
+      ui.clickNext.textContent = outcome && outcome.result.status === 'confirmed'
+        ? '✓ 已确认页面变化' : (outcome && outcome.result.status === 'busy' ? '正在处理中' : '未确认跳转');
     } catch (err) {
       console.warn('[AutoNext] 手动点击失败：', err);
       if (ui.diag) {
         ui.diag.hidden = false;
         ui.diag.textContent = '';
-        const sec = section('手动点击失败');
-        sec.appendChild(el('div', 'empty', err && err.message ? err.message : String(err)));
+        const sec = section('手动跳转结果未确认');
+        sec.appendChild(el('div', 'empty', `页面可能已离开或脚本执行失败，跳转结果未确认：${err && err.message ? err.message : String(err)}`));
         ui.diag.appendChild(sec);
       }
-      ui.clickNext.textContent = '执行失败';
+      ui.clickNext.textContent = '结果未确认';
     } finally {
       setTimeout(() => {
         ui.clickNext.textContent = original;
@@ -1082,7 +1171,8 @@ function copyToClipboard(text, successMsg = '✓ 已复制到剪贴板') {
 }
 
 if (ui.exportJsonBtn) {
-  ui.exportJsonBtn.addEventListener('click', () => {
+  ui.exportJsonBtn.addEventListener('click', async () => {
+    if (!await runDetection()) return;
     const report = {
       manifestVersion: '3',
       extensionVersion: chrome.runtime.getManifest ? chrome.runtime.getManifest().version : '1.2.0',
@@ -1104,6 +1194,9 @@ if (ui.exportJsonBtn) {
           frameType: result.frame,
           url: sanitizeUrl(result.url),
           injected: result.injected,
+          startupStatus: result.startupStatus,
+          missingModules: result.missingModules,
+          startupErrors: result.startupErrors,
           scriptVersion: result.scriptVersion,
           videos: (result.videos || []).map((v) => ({
             durationText: v.durationText,
@@ -1123,7 +1216,8 @@ if (ui.exportJsonBtn) {
 }
 
 if (ui.copyTextBtn) {
-  ui.copyTextBtn.addEventListener('click', () => {
+  ui.copyTextBtn.addEventListener('click', async () => {
+    if (!await runDetection()) return;
     const lines = [];
     lines.push(`=== AutoNext 诊断报告 (v${chrome.runtime.getManifest ? chrome.runtime.getManifest().version : '1.2.0'}) ===`);
     lines.push(`时间: ${new Date().toLocaleString()}`);
@@ -1142,6 +1236,9 @@ if (ui.copyTextBtn) {
       lines.push(`\n[Frame ${frameId} · ${result.frame || '未知'}]`);
       lines.push(`  地址: ${sanitizeUrl(result.url)}`);
       lines.push(`  已注入脚本: ${result.injected ? `是 (v${result.scriptVersion})` : '否'}`);
+      lines.push(`  启动状态: ${result.startupStatus || '未知'}`);
+      if (result.missingModules && result.missingModules.length) lines.push(`  缺少模块: ${result.missingModules.join(', ')}`);
+      if (result.startupErrors && result.startupErrors.length) lines.push(`  启动错误: ${JSON.stringify(result.startupErrors)}`);
       if (result.videos && result.videos.length) {
         result.videos.forEach((v, idx) => {
           lines.push(`  视频 #${idx + 1}: ${v.durationText} / 进度 ${v.positionText} / ${v.paused ? '暂停' : '播放中'} / ${v.playbackRate}x`);
